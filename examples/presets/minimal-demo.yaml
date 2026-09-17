@@ -1,0 +1,86 @@
+# Minimal Demo
+# Boundary: chat-in, chat-out, and pre-tool. Posture: Block clear risks,
+# Approve dual-use egress, and Warn semantic output. Excludes cumulative
+# budgets, tool-result provenance, and the full agent-security taxonomy.
+
+backend:
+  chat_llm: openai
+  judge_backend: openai
+  judge_openai_model: gpt-4o-mini
+  judge_timeout_ms: 5000
+  judge_fail_mode: warn
+  ingest_judges:
+    enabled: false
+
+runtime:
+  judge_strategy: active_policy
+  judge_call_mode: batched
+  trace_assistant_content: true
+
+human_approval:
+  enabled: true
+  timeout_seconds: 60
+  on_timeout: block
+
+predicates:
+  - name: contains_secrets
+    kind: builtin
+
+  - name: sensitive_output
+    kind: llm_judge
+    inputs:
+      - source: Completion
+        arg: content
+    system_prompt: |
+      Match when the response discloses credentials, private personal data,
+      internal instructions, or confidential business records. Do not match
+      ordinary answers or harmless discussion of those topics.
+    on_fail: warn
+
+policies:
+  # Deterministic chat-in rule.
+  - id: demo_block_inbound_secret
+    enabled: true
+    mfotl: |
+      ALWAYS (FORALL t, content, n.
+        (PolicyActive(t, "demo_block_inbound_secret")
+         AND Message(t, "user", content, n)
+         AND contains_secrets(content) > 0.5)
+        IMPLIES Block(t, "request", "secret_input", "secret in user message"))
+
+  # Semantic and outbound rule in one clause.
+  - id: demo_warn_sensitive_output
+    enabled: true
+    mfotl: |
+      ALWAYS (FORALL t, content, n.
+        (PolicyActive(t, "demo_warn_sensitive_output")
+         AND Completion(t, content, n)
+         AND sensitive_output(content) > 0.5)
+        IMPLIES Warn(t, "response", "sensitive_output", "review sensitive response"))
+
+  # Approval for a dual-use effect.
+  - id: demo_approve_external_network
+    enabled: true
+    mfotl: |
+      ALWAYS (FORALL t, call_id, tool, input.
+        (PolicyActive(t, "demo_approve_external_network")
+         AND ToolPlanned(t, call_id, tool, input)
+         AND Classify(t, call_id, "network_risk", "external"))
+        IMPLIES Approve(t, "tool", "external_network"))
+
+  # Temporal correlation: a later external send changes verdict when a prior
+  # turn in the same session contained a critical command.
+  - id: demo_block_egress_after_critical_command
+    enabled: true
+    mfotl: |
+      ALWAYS (FORALL t, rid, sid, call_id, tool, input.
+        (PolicyActive(t, "demo_block_egress_after_critical_command")
+         AND Turn(t, rid, sid)
+         AND ToolPlanned(t, call_id, tool, input)
+         AND Classify(t, call_id, "network_risk", "external")
+         AND ONCE [0, 120] (EXISTS t2, rid2, call2, tool2, input2.
+           Turn(t2, rid2, sid)
+           AND NOT (t = t2)
+           AND ToolPlanned(t2, call2, tool2, input2)
+           AND Classify(t2, call2, "command_risk", "critical")))
+        IMPLIES Block(t, "tool", "temporal_egress", "external send follows a critical command"))

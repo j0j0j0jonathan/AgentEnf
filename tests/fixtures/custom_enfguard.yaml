@@ -1,0 +1,22 @@
+backend:
+  judge_backend: openai
+  judge_timeout_ms: 500
+  judge_fail_mode: open
+
+predicates:
+  - name: has_magic_word
+    kind: python
+    path: ./custom_predicates.py
+    args:
+      - name: content
+        type: string
+
+policies:
+  - id: magic_block
+    enabled: true
+    mfotl: |
+      ALWAYS (FORALL t, c, n.
+        (PolicyActive(t, "magic_block")
+         AND UserMessage(t, c, n)
+         AND has_magic_word(c) > 0.5)
+        IMPLIES BlockRequest(t, "custom", "custom Python predicate matched"))

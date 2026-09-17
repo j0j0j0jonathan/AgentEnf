@@ -1,0 +1,108 @@
+
+backend:
+  chat_llm: anthropic
+  judge_backend: openai
+  judge_timeout_ms: 1500
+  judge_fail_mode: open
+  trusted_tool_names: []
+  ingest_judges:
+    enabled: true
+    unknown_tool: false
+    url_risk: false
+    persistence_instruction: false
+    secret_material: false
+    uncertain_action: false
+    package_name: false
+    webshell: false
+    content_disclosure: true
+
+runtime:
+  judge_strategy: "off"
+  judge_call_mode: batched
+  trace_assistant_content: true
+
+feedback:
+  enabled: false
+
+human_approval:
+  enabled: true
+  timeout_seconds: 60
+  on_timeout: block
+
+model_blocklist: []
+switches: []
+
+predicates: []
+
+policies:
+  - id: content_disclosure_v1
+    enabled: true
+    mfotl: |
+      {"local_write_secret_material"}{
+      ALWAYS (FORALL t, call_id, tool, input.
+        (PolicyActive(t, "content_disclosure_v1")
+         AND ToolPlanned(t, call_id, tool, input)
+         AND Classify(t, call_id, "content_risk", "secret_material"))
+        IMPLIES:R Block(t, "tool", "local_write_secret_material", "writing plaintext secret material into a local file (content-only exfiltration precursor)"))
+      }
+
+      AND
+
+      {"local_write_system_prompt"}{
+      ALWAYS (FORALL t, call_id, tool, input.
+        (PolicyActive(t, "content_disclosure_v1")
+         AND ToolPlanned(t, call_id, tool, input)
+         AND Classify(t, call_id, "content_risk", "system_prompt"))
+        IMPLIES:R Block(t, "tool", "local_write_system_prompt", "writing the agent's own system prompt / operating instructions into a local file (prompt-intelligence disclosure)"))
+      }
+
+      AND
+
+      {"content_disclosure_judge_failed_open"}{
+      ALWAYS (FORALL t, call_id, tool, input.
+        (PolicyActive(t, "content_disclosure_v1")
+         AND ToolPlanned(t, call_id, tool, input)
+         AND Classify(t, call_id, "judge_failed_open", "content_disclosure"))
+        IMPLIES:R Block(t, "tool", "content_disclosure_judge_failed_open", "content-disclosure judge failed open on sensitive-looking local-write content"))
+      }
+
+  - id: content_flow_v1
+    enabled: false
+    mfotl: |
+      {"send_of_sensitive_document"}{
+      ALWAYS (FORALL t, rid, s, call_id, tool, input, p.
+        (PolicyActive(t, "content_flow_v1")
+         AND Turn(t, rid, s)
+         AND ToolPlanned(t, call_id, tool, input)
+         AND Classify(t, call_id, "egress_source_path", p)
+         AND ONCE [0, 600] (EXISTS t2, r2, c2.
+              Turn(t2, r2, s)
+              AND Classify(t2, c2, "sensitive_write_path", p)))
+        IMPLIES:R Block(t, "tool", "send_of_sensitive_document", "sending a local document that earlier received secret material or the agent's system prompt in this session (content-flow exfiltration)"))
+      }
+
+  - id: authored_hook_provenance_v1
+    enabled: false
+    mfotl: |
+      {"provenance_hook_payload"}{
+      ALWAYS (FORALL t, rid, s, call_id, tool, input, p.
+        (PolicyActive(t, "authored_hook_provenance_v1")
+         AND Turn(t, rid, s)
+         AND ToolPlanned(t, call_id, tool, input)
+         AND Classify(t, call_id, "dangerous_authored_write_path", p)
+         AND ONCE [0, 600] (EXISTS t2, r2, c2.
+              Turn(t2, r2, s)
+              AND Classify(t2, c2, "deferred_hook_path", p)))
+        IMPLIES:R Block(t, "tool", "provenance_hook_payload", "authoring a secret-read or dangerous body into a file an earlier deferred-execution hook will run (split-artifact)"))
+      }
+
+  - id: judge_fail_closed_v1
+    enabled: false
+    mfotl: |
+      {"any_judge_failed_open"}{
+      ALWAYS (FORALL t, call_id, tool, input.
+        (PolicyActive(t, "judge_fail_closed_v1")
+         AND ToolPlanned(t, call_id, tool, input)
+         AND (EXISTS a. Classify(t, call_id, "judge_failed_open", a)))
+        IMPLIES:R Block(t, "tool", "judge_fail_closed", "a gated semantic judge could not decide a flagged call and this deployment fails closed"))
+      }

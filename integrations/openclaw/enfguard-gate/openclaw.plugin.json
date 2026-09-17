@@ -1,0 +1,42 @@
+{
+  "id": "enfguard-gate",
+  "name": "AgentEnf Gate",
+  "description": "Pre-tool enforcement and post-tool observation for AgentEnf.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean"
+      },
+      "apiUrl": {
+        "type": "string"
+      },
+      "adminToken": {
+        "type": "string"
+      },
+      "sid": {
+        "type": "string"
+      },
+      "workspaceRoots": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "failMode": {
+        "type": "string",
+        "enum": [
+          "block",
+          "allow"
+        ]
+      },
+      "blockApprovals": {
+        "type": "boolean"
+      },
+      "verdictsPath": {
+        "type": "string"
+      }
+    }
+  }
+}

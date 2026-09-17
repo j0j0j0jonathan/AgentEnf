@@ -1,0 +1,82 @@
+# Boundary Demo
+# Boundary: chat-in, chat-out, tool-result, and later pre-tool. Posture: Block
+# secrets and provenance-linked egress, Warn unsupported success claims.
+# Excludes trusted-tool attestation and general content moderation.
+
+backend:
+  chat_llm: openai
+  judge_backend: openai
+  judge_openai_model: gpt-4o-mini
+  judge_timeout_ms: 5000
+  judge_fail_mode: warn
+  trusted_tool_names: []
+  ingest_judges:
+    enabled: false
+
+runtime:
+  judge_strategy: active_policy
+  judge_call_mode: batched
+  trace_assistant_content: true
+
+switches:
+  - id: boundary_story
+    kind: choice
+    label: "Boundary story"
+    options: [all, chat_in, chat_out, tool_chain]
+    default: all
+
+predicates:
+  - name: contains_secrets
+    kind: builtin
+
+  - name: unsupported_success_claim
+    kind: llm_judge
+    inputs:
+      - source: Completion
+        arg: content
+    system_prompt: |
+      Match only when the assistant claims that an external action completed
+      successfully without concrete confirmation from a tool result. Do not
+      match plans, uncertainty, reported failures, or confirmed summaries.
+    on_fail: warn
+
+policies:
+  - id: boundary_chat_in
+    enabled: true
+    mfotl: |
+      ALWAYS (FORALL t, content, n.
+        (PolicyActive(t, "boundary_chat_in")
+         AND Message(t, "user", content, n)
+         AND (SettingString(t, "boundary_story", "all")
+              OR SettingString(t, "boundary_story", "chat_in"))
+         AND contains_secrets(content) > 0.5)
+        IMPLIES Block(t, "request", "chat_in_secret", "secret stopped before model call"))
+
+  - id: boundary_chat_out
+    enabled: true
+    mfotl: |
+      ALWAYS (FORALL t, content, n.
+        (PolicyActive(t, "boundary_chat_out")
+         AND Completion(t, content, n)
+         AND (SettingString(t, "boundary_story", "all")
+              OR SettingString(t, "boundary_story", "chat_out"))
+         AND unsupported_success_claim(content) > 0.5)
+        IMPLIES Warn(t, "response", "unsupported_claim", "review claim before release"))
+
+  - id: boundary_untrusted_result_to_action
+    enabled: true
+    mfotl: |
+      ALWAYS (FORALL t, rid, sid, call_id, tool, input.
+        (PolicyActive(t, "boundary_untrusted_result_to_action")
+         AND Turn(t, rid, sid)
+         AND ToolPlanned(t, call_id, tool, input)
+         AND (SettingString(t, "boundary_story", "all")
+              OR SettingString(t, "boundary_story", "tool_chain"))
+         AND Classify(t, call_id, "network_risk", "external")
+         AND ONCE [0, 120] (EXISTS t2, rid2, result_id, content, exit_code.
+           Turn(t2, rid2, sid)
+           AND NOT (t = t2)
+           AND ToolResult(t2, result_id, content, exit_code)
+           AND Untrusted(t2, "tool_result")
+           AND Classify(t2, result_id, "content_risk", "secret_material")))
+        IMPLIES Block(t, "tool", "untrusted_secret_egress", "external action follows an untrusted secret-bearing result"))

@@ -1,0 +1,59 @@
+# Strict Memory Integrity
+# Boundary: pre-tool writes and deletes targeting agent memory. Posture: require
+# approval for every memory mutation and Block poison-like standing directives.
+# Optional strict profile; ordinary project files and read-only memory access pass.
+
+backend:
+  chat_llm: openai
+  judge_backend: openai
+  judge_openai_model: gpt-4o-mini
+  judge_timeout_ms: 5000
+  judge_fail_mode: closed
+  ingest_judges:
+    enabled: true
+    unknown_tool: false
+    url_risk: false
+    persistence_instruction: false
+    secret_material: false
+    uncertain_action: false
+    package_name: false
+    webshell: false
+    content_disclosure: false
+    semantic_command: false
+    content_semantics: false
+    memory_poison: true
+    authored_capability: false
+
+runtime:
+  judge_strategy: active_policy
+  judge_call_mode: batched
+  trace_assistant_content: true
+
+human_approval:
+  enabled: true
+  timeout_seconds: 60
+  on_timeout: block
+
+predicates: []
+
+policies:
+  - id: strict_memory_poison_block
+    enabled: true
+    mfotl: |
+      ALWAYS (FORALL t, call_id, tool, input, target.
+        (PolicyActive(t, "strict_memory_poison_block")
+         AND ToolPlanned(t, call_id, tool, input)
+         AND Classify(t, call_id, "artifact_write", "agent_memory")
+         AND Classify(t, call_id, "control_artifact_write", target))
+        IMPLIES Block(t, "tool", "memory_poison", "poison-like agent-memory mutation"))
+
+  - id: strict_memory_write_approval
+    enabled: true
+    mfotl: |
+      ALWAYS (FORALL t, call_id, tool, input.
+        (PolicyActive(t, "strict_memory_write_approval")
+         AND ToolPlanned(t, call_id, tool, input)
+         AND Classify(t, call_id, "artifact_write", "agent_memory")
+         AND NOT (EXISTS target.
+           Classify(t, call_id, "control_artifact_write", target)))
+        IMPLIES Approve(t, "tool", "agent_memory_write"))

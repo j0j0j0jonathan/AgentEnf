@@ -1,0 +1,108 @@
+
+backend:
+  chat_llm: anthropic
+  judge_backend: openai
+  judge_timeout_ms: 1000
+  judge_fail_mode: open
+  trusted_tool_names: []
+  ingest_judges:
+    enabled: true
+    unknown_tool: false
+    url_risk: false
+    persistence_instruction: false
+    secret_material: false
+    uncertain_action: true
+    package_name: false
+    webshell: true
+
+runtime:
+  judge_strategy: "off"
+  judge_call_mode: batched
+  trace_assistant_content: true
+
+feedback:
+  enabled: false
+
+human_approval:
+  enabled: true
+  timeout_seconds: 60
+  on_timeout: block
+
+model_blocklist: []
+switches: []
+
+predicates: []
+
+policies:
+  - id: initial_access_v1
+    enabled: true
+    mfotl: |
+      {"brute_force"}{
+      ALWAYS (FORALL t, call_id, tool, input.
+        (PolicyActive(t, "initial_access_v1")
+         AND ToolPlanned(t, call_id, tool, input)
+         AND Classify(t, call_id, "action_class", "initial_access")
+         AND Classify(t, call_id, "ia_kind", "brute_force"))
+        IMPLIES:R Block(t, "tool", "brute_force", "credential brute-force tooling"))
+      }
+
+      AND
+
+      {"webshell"}{
+      ALWAYS (FORALL t, call_id, tool, input.
+        (PolicyActive(t, "initial_access_v1")
+         AND ToolPlanned(t, call_id, tool, input)
+         AND Classify(t, call_id, "action_class", "initial_access")
+         AND Classify(t, call_id, "ia_kind", "webshell"))
+        IMPLIES:R Block(t, "tool", "webshell", "webshell content written to an executable web file"))
+      }
+
+      AND
+
+      {"service_auth_default_credential"}{
+      ALWAYS (FORALL t, call_id, tool, input.
+        (PolicyActive(t, "initial_access_v1")
+         AND ToolPlanned(t, call_id, tool, input)
+         AND Classify(t, call_id, "action_class", "initial_access")
+         AND Classify(t, call_id, "ia_kind", "service_auth")
+         AND Classify(t, call_id, "credential_default", "true"))
+        IMPLIES:R Approve(t, "tool", "service_auth_default_credential"))
+      }
+
+      AND
+
+      {"connect_after_download"}{
+      ALWAYS (FORALL t, rid, s, call_id, tool, input.
+        (PolicyActive(t, "initial_access_v1")
+         AND Turn(t, rid, s)
+         AND ToolPlanned(t, call_id, tool, input)
+         AND Classify(t, call_id, "action_class", "initial_access")
+         AND NOT Classify(t, call_id, "connection_scope", "loopback_probe")
+         AND (Classify(t, call_id, "ia_kind", "service_auth")
+              OR Classify(t, call_id, "ia_kind", "outbound_connect"))
+         AND ONCE [0, 120] (EXISTS t1, r1, c1, tool1, input1.
+              Turn(t1, r1, s)
+              AND NOT (t = t1)
+              AND ToolPlanned(t1, c1, tool1, input1)
+              AND Classify(t1, c1, "resdev_kind", "download")))
+        IMPLIES:R Block(t, "tool", "connect_after_download", "outbound connection/auth after an external download"))
+      }
+
+      AND
+
+      {"use_after_credential_read"}{
+      ALWAYS (FORALL t, rid, s, call_id, tool, input.
+        (PolicyActive(t, "initial_access_v1")
+         AND Turn(t, rid, s)
+         AND ToolPlanned(t, call_id, tool, input)
+         AND Classify(t, call_id, "action_class", "initial_access")
+         AND NOT Classify(t, call_id, "connection_scope", "loopback_probe")
+         AND (Classify(t, call_id, "ia_kind", "service_auth")
+              OR Classify(t, call_id, "ia_kind", "outbound_connect"))
+         AND ONCE [0, 120] (EXISTS t1, r1, c1, tool1, input1.
+              Turn(t1, r1, s)
+              AND NOT (t = t1)
+              AND ToolPlanned(t1, c1, tool1, input1)
+              AND Classify(t1, c1, "action_class", "credential_access")))
+        IMPLIES:R Block(t, "tool", "use_after_credential_read", "service connection/auth after a credential read"))
+      }

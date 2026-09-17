@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "Please cite AgentEnf and the accompanying bachelor's thesis when using this software."
+title: "AgentEnf: Programmable Temporal Runtime Enforcement for LLM Agents"
+type: software
+authors:
+  - family-names: Hofer
+    given-names: Jonathan
+repository-code: "https://github.com/j0j0j0jonathan/AgentEnf"
+version: 0.1.0
+license: GPL-3.0-only
