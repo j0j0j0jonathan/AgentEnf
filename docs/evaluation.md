@@ -16,3 +16,7 @@ For a new run:
 For the thesis's headless A3S configuration, `ENFGUARD_APPROVAL_MODE=warn` allowed approval requests to proceed with a warning. Only effective blocking counted as prevention. Interactive deployment should normally use `interactive` instead.
 
 This repository supplies the current implementation and integration instructions. It does not publish a historical campaign snapshot or promise exact reproduction of the thesis's numerical results. No external benchmark is needed to run the system or its local regression tests.
+
+## Development prompts
+
+The [development corpus](../datasets/development-prompts/README.md) contains 1,269 unique prompts, including 971 attributed to model-generation sources. It includes expected historical verdicts and provenance, with an example generation brief. Its later consolidation split is not a historical held-out split. It is independent of the external A3S and AgentHazard datasets, which are obtained upstream.

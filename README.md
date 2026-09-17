@@ -61,7 +61,7 @@ node --test integrations/nanoclaw/*.test.mjs integrations/openclaw/*.test.mjs
 
 Most Python tests use stubs. Tests requiring the actual monitor skip unless `ENFGUARD_BIN` is explicitly set. Set it to a compatible executable to include them. Tests classify attack-shaped strings without executing those commands.
 
-[Architecture](docs/architecture.md) explains module ownership and extension points. [Evaluation](docs/evaluation.md) links the external A3S/ASEval project and describes its use with AgentEnf. The repository ships runtime source and regression tests. Research notes, private traces, benchmark datasets, and historical result bundles are excluded.
+[Architecture](docs/architecture.md) explains module ownership and extension points. [Evaluation](docs/evaluation.md) links the external A3S/ASEval project and describes its use with AgentEnf. The repository ships runtime source, regression tests, and a [1,269-prompt development corpus](datasets/development-prompts/README.md). Research notes, private traces, external benchmark datasets, and historical result bundles are excluded.
 
 ## Deployment scope
 
