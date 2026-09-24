@@ -35,3 +35,45 @@ test('missing token is rejected at registration', () => {
   try { assert.throws(() => register({ adminToken: '' }), /ADMIN_TOKEN/); }
   finally { if (previous !== undefined) process.env.ENFGUARD_ADMIN_TOKEN = previous; }
 });
+
+test('failed result delivery does not suppress the next identical observation', async (t) => {
+  for (const failure of ['transport', 'http', 'malformed']) {
+    const payloads = [];
+    let attempt = 0;
+    const mock = t.mock.method(globalThis, 'fetch', async (_, options) => {
+      payloads.push(JSON.parse(options.body));
+      if (attempt++ === 0) {
+        if (failure === 'transport') throw new Error('offline');
+        return { ok: failure !== 'http', status: failure === 'http' ? 503 : 200,
+          json: async () => failure === 'http' ? { decision: 'allow' } : {} };
+      }
+      return { ok: true, status: 200, json: async () => ({ decision: 'allow' }) };
+    });
+    const h = register({ sid: `retry-${failure}` });
+    const result = { toolName: 'process', params: { sessionId: 'worker' },
+      toolCallId: 'poll', result: 'result containing relevant evidence' };
+    await h.after_tool_call(result);
+    await h.after_tool_call(result);
+    await h.after_tool_call(result);
+    assert.equal(payloads[1].tool_response, result.result);
+    assert.equal(payloads[1].result_duplicate, false);
+    assert.equal(payloads[2].result_duplicate, true);
+    mock.mock.restore();
+  }
+});
+
+test('large repeated results deduplicate without confusing a changed suffix', async (t) => {
+  const payloads = [];
+  t.mock.method(globalThis, 'fetch', async (_, options) => {
+    payloads.push(JSON.parse(options.body));
+    return { ok: true, status: 200, json: async () => ({ decision: 'allow' }) };
+  });
+  const h = register({ sid: 'long-result' });
+  const result = { toolName: 'process', params: { sessionId: 'worker' },
+    toolCallId: 'poll', result: 'x'.repeat(200_001) };
+  await h.after_tool_call(result);
+  await h.after_tool_call(result);
+  await h.after_tool_call({ ...result, result: `${result.result}changed` });
+  assert.equal(payloads[1].result_duplicate, true);
+  assert.equal(payloads[2].result_duplicate, false);
+});

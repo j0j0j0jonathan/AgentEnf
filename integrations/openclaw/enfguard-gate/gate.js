@@ -1,4 +1,5 @@
 import fs from "fs";
+import { createHash } from "node:crypto";
 
 const DEFAULT_API_URL = "http://host.docker.internal:9000";
 const DEFAULT_TOKEN = "";
@@ -393,12 +394,11 @@ export const pluginDefinition = {
         let tool_response = resultTextForGate(event);
         let resultDuplicate = false;
         const resultKey = processResultKey(cfg, mapped);
-        if (resultKey && tool_response && lastProcessResultBySession.get(resultKey) === tool_response) {
+        const resultDigest = resultKey && tool_response
+          ? createHash("sha256").update(tool_response).digest("hex") : "";
+        if (resultDigest && lastProcessResultBySession.get(resultKey) === resultDigest) {
           tool_response = "";
           resultDuplicate = true;
-        } else if (resultKey && tool_response) {
-          if (lastProcessResultBySession.size >= 256) lastProcessResultBySession.delete(lastProcessResultBySession.keys().next().value);
-          lastProcessResultBySession.set(resultKey, tool_response.slice(0, 200_000));
         }
         const toolExecution = preToolDecisionByCallId.get(`${cfg.sid}:${call_id}`) || {
           effect_executed: true,
@@ -437,10 +437,19 @@ export const pluginDefinition = {
           httpStatus = res.status;
           rawResponse = res.data;
           tid = res.data?.tid ?? null;
+          if (!res.ok) throw new Error(`AgentEnf result endpoint returned HTTP ${res.status}`);
           if (!["allow", "block"].includes(res.data?.decision)) {
-              throw new Error("Invalid gate decision");
+            throw new Error("Invalid gate decision");
+          }
+          decision = res.data.decision;
+          // Remember only acknowledged observations. A failed delivery must not
+          // cause a later identical process result to lose its evidence.
+          if (resultDigest && !resultDuplicate) {
+            if (lastProcessResultBySession.size >= 256) {
+              lastProcessResultBySession.delete(lastProcessResultBySession.keys().next().value);
             }
-            decision = res.data.decision;
+            lastProcessResultBySession.set(resultKey, resultDigest);
+          }
           reason = String(res.data?.reason || "");
           policyDecision = String(
             res.data?.decision_trace?.result_gate?.policy_decision || decision
