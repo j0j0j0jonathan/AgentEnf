@@ -6,6 +6,12 @@ context to stamp trace rows with the current ``tid`` and session id.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar, copy_context
+from functools import wraps
+from threading import RLock, BoundedSemaphore, local
+from instrlib.latency import timed
+import fcntl
 import hashlib
 import importlib.util
 import inspect
@@ -19,6 +25,35 @@ from pathlib import Path
 from typing import Any, Optional
 
 import httpx
+
+_CACHE_IO_LOCK = RLock()
+_CACHE_LOCK_DEPTH = local()
+
+
+def _cache_serialized(fn):
+    signature = inspect.signature(fn)
+
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        with _CACHE_IO_LOCK:
+            # The proxy and embedded Python in EnfGuard share these files.
+            # Protect compaction against concurrent readers and appenders too.
+            if getattr(_CACHE_LOCK_DEPTH, "active", False):
+                return fn(*args, **kwargs)
+            bound = signature.bind(*args, **kwargs)
+            sid = bound.arguments.get("sid") or _current_sid()
+            folder = SESSIONS_DIR / _normalize_sid(sid)
+            folder.mkdir(parents=True, exist_ok=True)
+            with (folder / ".judge_cache.lock").open("a") as handle:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                _CACHE_LOCK_DEPTH.active = True
+                try:
+                    return fn(*args, **kwargs)
+                finally:
+                    _CACHE_LOCK_DEPTH.active = False
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    return wrapped
+
 
 BASE_DIR = Path(__file__).resolve().parent
 STATE_DIR = Path(os.environ.get("ENFGUARD_STATE_DIR", BASE_DIR / "state"))
@@ -283,6 +318,8 @@ def _session_memory_cache(sid: str) -> dict[str, JudgeResult]:
     return _JUDGE_CACHE.setdefault(_normalize_sid(sid), {})
 
 
+@_cache_serialized
+@timed("predicate_cache_access")
 def clear_session_cache(sid: str) -> dict[str, Any]:
     """Drop all cached results for one session — both memory and disk.
 
@@ -328,6 +365,19 @@ _TRACE_DEDUPE_ORDER: list[tuple[int, str, str]] = []
 _TRACE_DEDUPE_CAP = 4096
 
 
+_REQUEST_CONTEXT = ContextVar("predicate_request_context", default=None)
+
+
+@contextmanager
+def request_context(tid, sid="", phase="", dry_run=False):
+    """Bind proxy classification without changing the monitor's context file."""
+    token = _REQUEST_CONTEXT.set(dict(tid=tid, sid=sid, phase=phase, dry_run=int(dry_run)))
+    try:
+        yield
+    finally:
+        _REQUEST_CONTEXT.reset(token)
+
+
 def write_current_context(
     tid: int,
     sid: str = "",
@@ -349,6 +399,9 @@ def write_current_context(
 
 
 def _current_context() -> dict[str, Any]:
+    local = _REQUEST_CONTEXT.get()
+    if local is not None:
+        return local
     value = _CONTEXT_CACHE.get()
     return value if isinstance(value, dict) else {"tid": -1, "sid": "", "phase": "", "dry_run": 0}
 
@@ -622,6 +675,8 @@ def _judge(
     return result
 
 
+@_cache_serialized
+@timed("predicate_cache_access")
 def _cached_judge_result(cache_key: str, sid: str) -> JudgeResult | None:
     """Look up ``cache_key`` in the per-session cache for ``sid``.
 
@@ -846,7 +901,8 @@ def _dispatch_batched(
             (index, task, cache_key)
         )
 
-    for (backend, model, timeout_ms, _event_content), group in groups.items():
+    def run_group(entry):
+        (backend, model, timeout_ms, _event_content), group = entry
         if len(group) == 1:
             index, task, _ = group[0]
             results[index] = _judge(
@@ -855,7 +911,7 @@ def _dispatch_batched(
                 task.content,
                 task.cache_extra,
             )
-            continue
+            return
 
         batch_id = uuid.uuid4().hex[:12]
         started_at = time.monotonic()
@@ -879,7 +935,7 @@ def _dispatch_batched(
                     task.content,
                     task.cache_extra,
                 )
-            continue
+            return
 
         latency_ms = int((time.monotonic() - started_at) * 1000)
         for batch_index, (index, task, cache_key) in enumerate(group):
@@ -910,6 +966,18 @@ def _dispatch_batched(
                 _write_shared_judge_result(
                     cache_key, task.predicate_name, task.content, result, task_sid
                 )
+
+    from concurrent.futures import ThreadPoolExecutor
+    workers = max(1, int(os.environ.get("ENFGUARD_PREDICATE_BATCH_WORKERS", "4")))
+    if len(groups) <= 1 or workers == 1:
+        for entry in groups.items():
+            run_group(entry)
+    else:
+        with ThreadPoolExecutor(max_workers=min(workers, len(groups))) as pool:
+            futures = [pool.submit(copy_context().run, run_group, entry)
+                       for entry in groups.items()]
+            for future in futures:
+                future.result()
 
 
 def _dispatch_parallel(
@@ -957,7 +1025,8 @@ def _dispatch_parallel(
     # connections; the real workload is a handful of judges per phase.
     max_workers = min(len(items), 8) or 1
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        for index, result in pool.map(_run_one, items):
+        for index, result in (f.result() for f in
+                              [pool.submit(copy_context().run, _run_one, item) for item in items]):
             results[index] = result
 
 
@@ -993,6 +1062,8 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
+@_cache_serialized
+@timed("predicate_cache_access")
 def _shared_judge_result(cache_key: str, sid: str) -> JudgeResult | None:
     """Look up ``cache_key`` inside ``sid``'s on-disk judge cache.
 
@@ -1056,6 +1127,8 @@ def _shared_judge_result(cache_key: str, sid: str) -> JudgeResult | None:
     return result
 
 
+@_cache_serialized
+@timed("predicate_cache_access")
 def _write_shared_judge_result(
     cache_key: str,
     predicate_name: str,
@@ -1101,6 +1174,8 @@ def _write_shared_judge_result(
         print(f"[judge_cache] write failed for sid={entry['sid']}: {exc}", flush=True)
 
 
+@_cache_serialized
+@timed("predicate_cache_access")
 def override_judge_cache(
     predicate_name: str,
     content: str,
@@ -1202,7 +1277,7 @@ def _judge_config(predicate_name: str) -> tuple[str, str, int]:
         {},
     )
     backend = (str(spec.get("backend", "")) or os.environ.get("JUDGE_BACKEND", "ollama")).strip().lower()
-    if backend not in {"openai", "ollama", "anthropic"}:
+    if backend not in {"openai", "openai_decisions", "ollama", "anthropic"}:
         backend = "ollama"
     model = str(spec.get("model", "")) or _default_judge_model(backend)
     try:
@@ -1215,6 +1290,8 @@ def _judge_config(predicate_name: str) -> tuple[str, str, int]:
 
 
 def _default_judge_model(backend: str) -> str:
+    if backend == "openai_decisions":
+        return os.environ.get("JUDGE_DECISIONS_MODEL", "gpt-6-luna")
     if backend == "openai":
         return os.environ.get("JUDGE_OPENAI_MODEL", "gpt-4o-mini")
     if backend == "ollama":
@@ -1235,6 +1312,14 @@ def _call_judge_api(
     repair_hint: str = "",
 ) -> str:
     """Single-task judge HTTP call dispatched by ``backend``."""
+
+    if backend == "openai_decisions":
+        from instrlib import decisions
+        with _MODEL_SLOTS:
+            data = decisions.ask(_sanitize(content)[:4000],
+                [decisions.predicate_question("criterion", _sanitize(system_prompt)[:4000])],
+                max(timeout_ms, 1) / 1000, model=model)
+        return json.dumps(decisions.predicate_result(data))
 
     timeout_s = max(timeout_ms, 1) / 1000
     repair = ""
@@ -1321,6 +1406,22 @@ def _call_batch_judge_api(
 ) -> str:
     """Multi-task judge HTTP call sharing one upstream backend."""
 
+    if backend == "openai_decisions":
+        from instrlib import decisions
+        # Decisions questions share ONE input. Never combine different inputs.
+        groups = {}
+        for index, task in enumerate(tasks):
+            groups.setdefault(_sanitize(task.content)[:4000], []).append((index, task))
+        results = []
+        for content, group in groups.items():
+            questions = [decisions.predicate_question(str(index), _sanitize(task.system_prompt)[:4000])
+                         for index, task in group]
+            with _MODEL_SLOTS:
+                data = decisions.ask(content, questions, max(timeout_ms, 1) / 1000, model=model)
+            for position, (index, task) in enumerate(group):
+                results.append({"id": index, **decisions.predicate_result(data, position)})
+        return json.dumps({"results": sorted(results, key=lambda result: result["id"])})
+
     timeout_s = max(timeout_ms, 1) / 1000
     user_msg = json.dumps(
         {
@@ -1376,6 +1477,18 @@ def _call_batch_judge_api(
     )
 
 
+_MODEL_SLOTS = BoundedSemaphore(max(1, int(os.environ.get("ENFGUARD_PREDICATE_MAX_CONCURRENT", "4"))))
+
+
+def _bounded_model_call(fn):
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        with _MODEL_SLOTS:
+            return fn(*args, **kwargs)
+    return wrapped
+
+
+@_bounded_model_call
 def _dispatch_judge(
     *,
     system_prompt: str,

@@ -434,7 +434,7 @@ def test_pre_evaluate_judges_never_batches_different_events(tmp_path, monkeypatc
         ]
     )
 
-    assert batch_calls == ["first event", "second event"]
+    assert sorted(batch_calls) == ["first event", "second event"]
     assert [result.raw_score for result in results] == [0.0, 0.0]
 
 

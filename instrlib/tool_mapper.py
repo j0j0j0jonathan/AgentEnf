@@ -5047,6 +5047,7 @@ def broad_content_labels_with_status(
     ``secret_material_label_with_status``. Skipping local runtime/config bytes
     here avoids spending a model call on labels that the trust gate would reject.
     """
+    text = strip_enfguard_annotations(text)
     if not untrusted:
         return (), None
     fn = _BROAD_CONTENT_JUDGE
@@ -5132,6 +5133,11 @@ def append_tool_result_content_risk_events(
     broad adapter is disabled, and trusted local results retain the narrow
     secret-only route.
     """
+
+    # Keep the original ToolResult for audit, but classify only tool content.
+    text = strip_enfguard_annotations(text)
+    if not text.strip():
+        return
 
     emitted: set[str] = set()
 

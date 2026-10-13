@@ -514,7 +514,7 @@ def _anthropic_tool_result_events(
             events,
             tid,
             call_id,
-            text,
+            _preview_value(block.get("content"), preserve_whitespace=True),
             untrusted=_tool_result_is_untrusted(
                 call_id, proposing_tools, trusted_tool_names, origins
             ),
@@ -552,7 +552,7 @@ def _openai_tool_result_events(
         events,
         tid,
         call_id,
-        text,
+        _preview_value(message.get("content"), preserve_whitespace=True),
         untrusted=_tool_result_is_untrusted(
             call_id, proposing_tools, trusted_tool_names, origins
         ),
@@ -676,13 +676,17 @@ def _tool_input_object(value: Any) -> JsonObject:
 _TOOL_RESULT_CONTENT_LIMIT = 2000
 
 
-def _preview_value(value: Any, limit: int = _TOOL_RESULT_CONTENT_LIMIT) -> str:
+def _preview_value(
+    value: Any, limit: int = _TOOL_RESULT_CONTENT_LIMIT, *,
+    preserve_whitespace: bool = False,
+) -> str:
     """Extract and truncate tool-result content for the EnfGuard event stream.
 
     Converts any provider payload shape (string, Anthropic content list, or
     arbitrary JSON) into a single compact string and trims it to ``limit``
     characters. Whitespace is normalised (collapse runs of whitespace to a
-    single space) so the truncation boundary is predictable.
+    single space) so the truncation boundary is predictable. Classification keeps
+    line boundaries so leading enforcer annotations can be removed separately.
     """
 
     if isinstance(value, str):
@@ -694,7 +698,7 @@ def _preview_value(value: Any, limit: int = _TOOL_RESULT_CONTENT_LIMIT) -> str:
             preview = json.dumps(value, ensure_ascii=False)
         except TypeError:
             preview = str(value)
-    return " ".join(preview.split())[:limit]
+    return (preview if preserve_whitespace else " ".join(preview.split()))[:limit]
 
 
 def _message_list(value: Any) -> list[JsonObject]:

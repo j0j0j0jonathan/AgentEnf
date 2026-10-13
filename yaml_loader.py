@@ -44,7 +44,7 @@ _BUILTIN_PREDICATE_NAMES: frozenset[str] = frozenset(
 )
 _DETERMINISTIC_BUILTIN_PREDICATES: frozenset[str] = frozenset({"hard_rules", "model_blocklist"})
 _VALID_ARG_TYPES = {"string", "int", "float"}
-_VALID_JUDGE_BACKENDS = {"", "openai", "ollama", "anthropic"}
+_VALID_JUDGE_BACKENDS = {"", "openai", "openai_decisions", "ollama", "anthropic"}
 _LLM_JUDGE_ALLOWED_INPUTS: frozenset[tuple[str, str]] = frozenset(
     {
         ("Message", "content"),
@@ -99,6 +99,7 @@ class BackendConfig:
     ollama_base_url: str | None = None
     judge_backend: str = "ollama"
     judge_openai_model: str = "gpt-4o-mini"
+    judge_decisions_model: str = "gpt-6-luna"
     judge_ollama_model: str = "qwen2.5:0.5b"
     judge_anthropic_model: str = "claude-3-5-haiku-latest"
     judge_timeout_ms: int = 2500
@@ -154,7 +155,7 @@ class PredicateSpec:
     path: Path | None = None
     system_prompt: str = ""
     on_fail: str | None = None
-    backend: str = ""        # "openai" | "ollama" | "anthropic" | ""
+    backend: str = ""        # "openai" | "openai_decisions" | "ollama" | "anthropic" | ""
     model: str = ""          # provider-specific model id; "" = use global default
     timeout_ms: int = 0      # 0 = use global JUDGE_TIMEOUT_MS
 
@@ -363,6 +364,7 @@ def _parse_backend(raw: Any, base_dir: Path) -> BackendConfig:
         openai_base_url=_optional_str(data.get("openai_base_url")),
         ollama_base_url=_optional_str(data.get("ollama_base_url")),
         judge_backend=str(data.get("judge_backend", "ollama") or "ollama"),
+        judge_decisions_model=str(data.get("judge_decisions_model", "gpt-6-luna") or "gpt-6-luna"),
         judge_openai_model=str(data.get("judge_openai_model", "gpt-4o-mini") or "gpt-4o-mini"),
         judge_ollama_model=str(data.get("judge_ollama_model", "qwen2.5:0.5b") or "qwen2.5:0.5b"),
         judge_anthropic_model=str(

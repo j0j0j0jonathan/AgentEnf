@@ -14,6 +14,7 @@ Verdict format (received from EnfGuard stdout)
    "cause":    [{"name": "...", "args": [...]}, ...]}
 """
 
+from instrlib.latency import record, timed
 import json
 import os
 import datetime
@@ -60,6 +61,7 @@ _COLORS = {
     "reset":     "\033[0m",
 }
 
+@timed("diagnostic_output")
 def _log(agent: str, msg: str) -> None:
     ts    = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
     pad   = agent + (10 - len(agent)) * " "
@@ -138,6 +140,7 @@ class Enforcer:
 
     # trace file
 
+    @timed("trace_write")
     def _trace(self, direction: str, content: str) -> None:
         """Append one entry to the trace file (thread-safe). No-op if no trace path."""
         if self._trace_file is None:
@@ -276,6 +279,7 @@ class Enforcer:
     # formatting
 
     @staticmethod
+    @timed("event_serialisation")
     def _format(events: List[Event], timestamp: int) -> bytes:
         body = " ".join(str(e) for e in events)
         line = f"@{timestamp} {body};"
@@ -324,6 +328,7 @@ class Enforcer:
             (flag, result_q, stm, trace_ts, quiet),
             expects_response=expects_response,
         )
+        flag.latency_queued_ns = time.perf_counter_ns()
         self._write_prio.put(item)
 
         if not expects_response:
@@ -353,6 +358,7 @@ class Enforcer:
                 continue
 
             flag, result_q, stm, trace_ts, quiet = item.event_tuple
+            record("bridge_queue", flag.latency_queued_ns)
 
             # Always register so the reader can pair this statement with exactly
             # one monitor response.
@@ -363,8 +369,10 @@ class Enforcer:
             assert self._proc is not None
             if self._proc.poll() is None:
                 try:
+                    write_start = time.perf_counter_ns()
                     self._proc.stdin.write(stm)
                     self._proc.stdin.flush()
+                    record("stdin_write", write_start)
                     if not quiet:
                         line = stm.decode().rstrip()
                         _log("writer", f"→ {line}")
@@ -391,7 +399,9 @@ class Enforcer:
                         continue
                     msg_str = raw.decode()
                     try:
+                        parse_start = time.perf_counter_ns()
                         msg = json.loads(msg_str)
+                        record("response_json_decode", parse_start)
                     except json.JSONDecodeError:
                         stripped = msg_str.strip()
                         _log("reader", f"Skipping non-JSON: {stripped}")

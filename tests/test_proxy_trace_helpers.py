@@ -515,8 +515,8 @@ async def test_tool_phase_blocks_suppressed_tool_call(monkeypatch):
     assert reasons == {}
     assert isinstance(enfguard_ms, int)
     assert calls == [
-        ("context", {"tid": 77, "sid": "s-tool", "phase": "tool", "dry_run": False}),
         ("pre", ["ToolCall"], {}),
+        ("context", {"tid": 77, "sid": "s-tool", "phase": "tool", "dry_run": False}),
         ("log", ["ToolCall"], 77),
     ]
 
@@ -3296,6 +3296,42 @@ def test_list_recent_traces_includes_deterministic_session_only_turn(
 
     assert [entry["tid"] for entry in traces] == [12]
     assert traces[0]["action"] == "tool_allow"
+    assert traces[0]["sid"] == ""
+    assert traces[0]["tool_name"] == ""
+
+
+def test_list_recent_traces_reports_session_and_tool_name(tmp_path, monkeypatch):
+    logs_dir = tmp_path
+    (logs_dir / "traces").mkdir()
+    monkeypatch.setattr(
+        proxy.state,
+        "config",
+        replace(
+            proxy.state.config,
+            logs_dir=logs_dir,
+            trace_store_file=logs_dir / "trace_store.jsonl",
+        ),
+    )
+    now = time.time()
+    _write_trace(
+        logs_dir / "session_demo.jsonl",
+        [{
+            "tid": 4,
+            "ts": now,
+            "provider": "tool",
+            "action": "tool_block",
+            "inbound": [
+                {"name": "Turn", "args": [4, "req-4", "live-demo"]},
+                {"name": "ToolPlanned", "args": [4, "call-4", "bash", "rm -rf backups"]},
+            ],
+        }],
+    )
+    monkeypatch.setattr(proxy.state, "run_started_at", now - 60.0)
+
+    traces = proxy._list_recent_traces(50)
+
+    assert traces[0]["sid"] == "live-demo"
+    assert traces[0]["tool_name"] == "bash"
 
 
 def test_archive_previous_run_logs_moves_and_rolls(tmp_path, monkeypatch):
@@ -3799,10 +3835,12 @@ def test_active_predicate_calls_follow_policy_toggles(tmp_path, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_phase_pre_eval_runs_after_context_is_published(monkeypatch):
+async def test_phase_pre_eval_uses_local_context_before_monitor_context_is_published(monkeypatch):
     calls = []
 
     def fake_pre_evaluate(events, predicate_calls):
+        import predicates
+        assert predicates._current_context() == dict(tid=123, sid="s-test", phase="inbound", dry_run=0)
         calls.append(("pre", [event.name for event in events], predicate_calls))
 
     def fake_write_context(**kwargs):
@@ -3833,8 +3871,8 @@ async def test_phase_pre_eval_runs_after_context_is_published(monkeypatch):
     assert isinstance(enfguard_ms, int)
     assert enfguard_ms >= 0
     assert calls == [
-        ("context", {"tid": 123, "sid": "s-test", "phase": "inbound", "dry_run": False}),
         ("pre", ["UserMessage"], {"UserMessage": []}),
+        ("context", {"tid": 123, "sid": "s-test", "phase": "inbound", "dry_run": False}),
         ("log", ["UserMessage"], 123),
     ]
 
@@ -3899,8 +3937,8 @@ async def test_phase2_can_pre_eval_combined_events_for_aggressive_batching(monke
         ],
     )
 
-    assert calls[0] == ("context", {"tid": 124, "sid": "s-test", "phase": "outbound", "dry_run": False})
-    assert calls[1] == ("pre", ["UserMessage", "CompletionObserved"], None)
+    assert calls[1] == ("context", {"tid": 124, "sid": "s-test", "phase": "outbound", "dry_run": False})
+    assert calls[0] == ("pre", ["UserMessage", "CompletionObserved"], None)
     assert calls[2] == ("log", ["CompletionObserved"], 124)
 
 

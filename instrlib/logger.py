@@ -10,6 +10,7 @@ Logger: central coordinator that ties Schema, PEP, and Enforcer together.
 
 """
 
+from instrlib.latency import timed
 import threading
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
@@ -70,6 +71,7 @@ class Logger:
     # Verdict parsing
 
     @staticmethod
+    @timed("verdict_decode")
     def _parse_verdict(
         raw: Dict[str, Any],
     ) -> Tuple[bool, bool, Dict[str, List[tuple]], Dict[str, List[tuple]]]:

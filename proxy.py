@@ -72,7 +72,8 @@ from mappings import (
     _preview_value,
 )
 from instrlib.tool_mapper import classify_result_origin
-from predicates import override_judge_cache, write_current_context
+from predicates import override_judge_cache, write_current_context, request_context
+from instrlib.ordered_evaluation import OrderedEvaluation
 from static_analysis import (
     PredicateCall,
     extract_predicate_calls,
@@ -1611,8 +1612,8 @@ async def _phase1_enforce(
     """Run inbound enforcement and return ``(cau, reasons, enfguard_ms)``.
 
     ``enfguard_ms`` is the wall-clock time spent inside the
-    ``_logger().log`` call alone — i.e. the OCaml binary's evaluation
-    cost for this phase, rounded to whole milliseconds for the existing
+    ``_logger().log`` call alone — including transport and the monitor's
+    round-trip time for this phase, rounded to whole milliseconds for the existing
     trace UI. Pre-evaluation (judge HTTP) is excluded from that integer.
     The full split, including sub-millisecond values, is stored per tid
     and written onto the session record as ``latency_ms``.
@@ -1640,6 +1641,29 @@ async def _tool_phase_enforce(
     return cau_in, _read_trace_reasons(tid, sid, "tool"), enfguard_ms
 
 
+_ordered_evaluation = OrderedEvaluation()
+
+
+async def _evaluate_prepared(tid, sid, phase, events, preeval_events, calls):
+    dry_run = _dry_run_enabled()
+
+    async def prepare():
+        t0 = time.perf_counter()
+        with request_context(tid, sid, phase, dry_run):
+            await asyncio.to_thread(pre_evaluate, preeval_events, calls)
+        return _ms(t0, time.perf_counter())
+
+    async def submit(pre_ms):
+        async with state.enforcement_lock:
+            write_current_context(tid=tid, sid=sid, phase=phase, dry_run=dry_run)
+            t0 = time.perf_counter()
+            result = await asyncio.to_thread(_logger().log, events, tid)
+            monitor_ms = _ms(t0, time.perf_counter())
+        return result, PhaseTiming(pre_evaluate_ms=pre_ms, monitor_ms=monitor_ms)
+
+    return await _ordered_evaluation.run(prepare, submit)
+
+
 async def _phase1_enforce_raw(
     tid: int,
     sid: str,
@@ -1647,14 +1671,8 @@ async def _phase1_enforce_raw(
     phase: str,
 ) -> tuple[dict[str, list[tuple[Any, ...]]], dict[str, list[tuple[Any, ...]]], int]:
     calls = None if _aggressive_batching_enabled() else _active_predicate_calls()
-    async with state.enforcement_lock:
-        write_current_context(tid=tid, sid=sid, phase=phase, dry_run=_dry_run_enabled())
-        t0 = time.perf_counter()
-        await asyncio.to_thread(pre_evaluate, inbound_events, calls)
-        t1 = time.perf_counter()
-        _, _, cau_in, sup_in = await asyncio.to_thread(_logger().log, inbound_events, tid)
-        t2 = time.perf_counter()
-    timing = PhaseTiming(pre_evaluate_ms=_ms(t0, t1), monitor_ms=_ms(t1, t2))
+    (_, _, cau_in, sup_in), timing = await _evaluate_prepared(
+        tid, sid, phase, inbound_events, inbound_events, calls)
     _store_phase_timing(tid, phase, timing)
     return cau_in, sup_in, int(round(timing.monitor_ms))
 
@@ -1677,14 +1695,8 @@ async def _phase2_enforce(
     preeval_events: list[Event] | None = None,
 ) -> tuple[dict[str, list[tuple[Any, ...]]], dict[str, str], int]:
     calls = None if _aggressive_batching_enabled() else _active_predicate_calls()
-    async with state.enforcement_lock:
-        write_current_context(tid=tid, sid=sid, phase="outbound", dry_run=_dry_run_enabled())
-        t0 = time.perf_counter()
-        await asyncio.to_thread(pre_evaluate, preeval_events or outbound_events, calls)
-        t1 = time.perf_counter()
-        _, _, cau_out, sup_out = await asyncio.to_thread(_logger().log, outbound_events, tid)
-        t2 = time.perf_counter()
-    timing = PhaseTiming(pre_evaluate_ms=_ms(t0, t1), monitor_ms=_ms(t1, t2))
+    (_, _, cau_out, sup_out), timing = await _evaluate_prepared(
+        tid, sid, "outbound", outbound_events, preeval_events or outbound_events, calls)
     _store_phase_timing(tid, "outbound", timing)
     enfguard_ms = int(round(timing.monitor_ms))
     cau_out = _adapt_v4_verdicts(cau_out)
@@ -2532,6 +2544,7 @@ def _apply_loaded_config(config: RuntimeConfig, loaded: LoadedConfig) -> Runtime
     env = dict(config.enfguard_env)
     judge_env = {
         "JUDGE_BACKEND": loaded.backend.judge_backend,
+        "JUDGE_DECISIONS_MODEL": loaded.backend.judge_decisions_model,
         "JUDGE_OPENAI_MODEL": loaded.backend.judge_openai_model,
         "JUDGE_OLLAMA_MODEL": loaded.backend.judge_ollama_model,
         "JUDGE_ANTHROPIC_MODEL": loaded.backend.judge_anthropic_model,
@@ -3884,6 +3897,8 @@ def _list_recent_traces(limit: int) -> list[JsonObject]:
             {
                 "tid": tid,
                 "ts": mtime,
+                "sid": _sid_from_records(records),
+                "tool_name": _tool_name_from_records(records),
                 "action": verdict.get("action", ""),
                 "phase": verdict.get("phase", ""),
                 "predicate_count": len(rows),
@@ -3932,6 +3947,39 @@ def _latest_session_record(records: list[JsonObject]) -> JsonObject | None:
     if not records:
         return None
     return max(records, key=lambda record: float(record.get("ts", 0.0) or 0.0))
+
+
+def _sid_from_records(records: list[JsonObject]) -> str:
+    """Session id already stored on the turn, for the console's session list.
+
+    Empty when the record has no Turn or Session event. The field is additive:
+    older clients ignore it.
+    """
+
+    for record in records:
+        sid = _record_sid(record)
+        if sid:
+            return sid
+    return ""
+
+
+def _tool_name_from_records(records: list[JsonObject]) -> str:
+    """Tool name from a ToolPlanned or ToolCall event, when one was logged."""
+
+    for record in records:
+        for group_name in ("inbound", "outbound", "verdict_events"):
+            events = record.get(group_name)
+            if not isinstance(events, list):
+                continue
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                if event.get("name") not in {"ToolPlanned", "ToolCall"}:
+                    continue
+                args = event.get("args")
+                if isinstance(args, list) and len(args) >= 3 and args[2]:
+                    return str(args[2])
+    return ""
 
 
 def _record_sid(record: JsonObject) -> str:

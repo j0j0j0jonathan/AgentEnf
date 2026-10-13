@@ -33,7 +33,7 @@ Config:
                                                   gate allow threshold (default .95)
   backend.unknown_tool_judge                     legacy master/default toggle
   ENFGUARD_TOOL_JUDGE          env override: 1/true/yes/on or 0/false/no/off
-  ENFGUARD_TOOL_JUDGE_BACKEND  "openai" (default) | "anthropic"
+  ENFGUARD_TOOL_JUDGE_BACKEND  "openai" (default) | "anthropic" | "openai_decisions"
   ENFGUARD_TOOL_JUDGE_MODEL    model id (defaults per backend)
   ENFGUARD_TOOL_JUDGE_TIMEOUT  seconds (default 4)
   ENFGUARD_UNKNOWN_TOOL_ALLOW_THRESHOLD env override for the YAML threshold
@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import os
+import atexit
 import re
 import threading
 import time
@@ -259,7 +260,7 @@ def _post_judge(url: str, headers: Dict[str, str], body: Dict[str, Any], timeout
         slot.acquire()
     try:
         for attempt in range(attempts):
-            response = httpx.post(url, headers=headers, json=body, timeout=timeout_s)
+            response = _post_json(url, headers=headers, json=body, timeout=timeout_s)
             if getattr(response, "status_code", 200) == 429 and attempt + 1 < attempts:
                 time.sleep(_retry_delay(response, attempt))
                 continue
@@ -1264,7 +1265,11 @@ def _dispatch(adapter: str, user_msg: str, timeout_s: float, system: str) -> str
     reply = ""
     err: Optional[str] = None
     try:
-        if backend == "anthropic":
+        if backend == "openai_decisions":
+            from instrlib import decisions
+            reply = decisions.tool_call(adapter, user_msg, timeout_s, system,
+                model=model or os.environ.get("ENFGUARD_TOOL_JUDGE_MODEL") or decisions.DEFAULT_MODEL)
+        elif backend == "anthropic":
             reply = _call_anthropic(user_msg, timeout_s, system=system, model=model)
         else:
             reply = _call_openai(user_msg, timeout_s, system=system, model=model)
@@ -1363,3 +1368,20 @@ def _float_env(name: str, default: float) -> float:
         return float(os.environ.get(name, "") or default)
     except (TypeError, ValueError):
         return default
+
+
+# Opt-in connection reuse: preserve prompts, timeout, retry policy, and responses.
+# The client is shared across threads; httpx.Client supports concurrent requests.
+_KEEPALIVE_CLIENT = None
+_KEEPALIVE_LOCK = threading.Lock()
+
+def _post_json(url, **kwargs):
+    global _KEEPALIVE_CLIENT
+    if os.environ.get("ENFGUARD_TOOL_JUDGE_KEEPALIVE", "0") != "1":
+        return httpx.post(url, **kwargs)
+    with _KEEPALIVE_LOCK:
+        if _KEEPALIVE_CLIENT is None:
+            _KEEPALIVE_CLIENT = httpx.Client()
+            atexit.register(_KEEPALIVE_CLIENT.close)
+        client = _KEEPALIVE_CLIENT
+    return client.post(url, **kwargs)

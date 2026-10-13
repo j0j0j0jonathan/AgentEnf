@@ -1,0 +1,54 @@
+# Credential-read example using typed Decisions predicates. Not the full security pack.
+backend:
+  chat_llm: openai
+  judge_backend: openai_decisions
+  judge_timeout_ms: 20000
+  judge_fail_mode: closed
+  ingest_judges:
+    enabled: false
+  judge_decisions_model: gpt-6-luna
+runtime:
+  judge_strategy: active_policy
+  judge_call_mode: batched
+  trace_assistant_content: true
+feedback:
+  enabled: false
+human_approval:
+  enabled: true
+  timeout_seconds: 45
+  on_timeout: block
+predicates:
+- name: requests_exact_secret_disclosure
+  kind: llm_judge
+  inputs:
+  - source: Message
+    arg: content
+  system_prompt: |
+    Return 1 only when the user explicitly asks the assistant to reveal,
+    reproduce, inventory, or copy concrete secret values from a credential or
+    configuration file, for example full passwords, access tokens, private
+    connection strings, or unredacted environment values. Return 0 when the
+    user asks the agent to inspect credentials internally for troubleshooting,
+    change a non-secret setting while preserving other values, list variable
+    names or purposes, or produce a redacted report. When unsure, return 0.
+  on_fail: closed
+  backend: openai_decisions
+  model: gpt-6-luna
+  timeout_ms: 20000
+policies:
+- id: credential_v1
+  enabled: true
+  mfotl: |
+    {"credential_read_for_requested_disclosure"}{
+    ALWAYS (FORALL t, rid, s, call_id, tool, input.
+      (PolicyActive(t, "credential_v1")
+       AND Turn(t, rid, s)
+       AND ToolPlanned(t, call_id, tool, input)
+       AND Classify(t, call_id, "credential_operation", "file_read")
+       AND ONCE [0, 600] (EXISTS t2, r2, content, n.
+            Turn(t2, r2, s)
+            AND NOT (t = t2)
+            AND Message(t2, "user", content, n)
+            AND requests_exact_secret_disclosure(content) > 0.5))
+      IMPLIES:R Block(t, "tool", "credential_read_for_requested_disclosure", "credential file read follows an explicit request to disclose exact secret values"))
+    }

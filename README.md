@@ -72,3 +72,7 @@ A pre-tool hook can withhold a pending action. A post-tool hook records an opera
 ## Attribution and license
 
 AgentEnf builds on EnfGuard and the InstrLib instrumentation work. See [third-party notices](THIRD_PARTY_NOTICES.md) for source provenance and component licenses. AgentEnf is distributed under GPL-3.0. The separately installed monitor and other dependencies retain their respective licenses.
+
+## Typed classifier backend
+
+OpenAI Decisions is available as `openai_decisions` for policy predicates and routed tool classifiers. See [configuration and migration](docs/decisions.md) and the [credential-read example](examples/decisions.yaml). Existing backends and evaluation fixtures retain their original settings.
