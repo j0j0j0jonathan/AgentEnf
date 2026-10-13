@@ -82,7 +82,7 @@ def test_provider_result_keeps_audit_text_but_judges_body(provider, judge_inputs
     else:
         content = [{"type": "text", "text": text}] if provider == "anthropic_blocks" else text
         events = _anthropic_tool_result_events(1, [{"type": "tool_result", "tool_use_id": "c", "content": content}], {"c": "web_fetch"}, frozenset())
-    assert next(e for e in events if e.name == "ToolResult").args[2] == " ".join(text.split())
+    assert next(e for e in events if e.name == "ToolResult").args[2] == text
     assert judge_inputs == [BENIGN]
     assert risks(events) == set()
 

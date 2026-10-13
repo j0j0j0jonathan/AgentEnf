@@ -3,6 +3,7 @@ instrlib.event
 Adapted from instrlib-main/miniTwitter_case_study/.../instrlib/event.py.
 """
 
+import math
 from typing import Any, Tuple
 
 
@@ -26,9 +27,15 @@ class Event:
     @staticmethod
     def _format_arg(s: Any) -> str:
         """Format a single argument for the EnfGuard log."""
+        # Values are typed by the event schema. A numeric-looking string is
+        # still a string (for example a session id or the entire message "123").
+        if type(s) is int:
+            return str(s)
+        if type(s) is float:
+            if not math.isfinite(s):
+                raise ValueError("Event numbers must be finite")
+            return str(s)
         s = str(s)
-        if s.lstrip("-").isnumeric() or _is_float(s):
-            return s
         return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
     def __str__(self) -> str:
@@ -42,7 +49,7 @@ class Event:
         return hash(repr(self))
 
     def __eq__(self, other: object) -> bool:
-        return isinstance(other, Event) and hash(self) == hash(other)
+        return isinstance(other, Event) and repr(self) == repr(other)
 
 
 class TimedTuple:

@@ -356,9 +356,9 @@ def classify_unknown_tool_review(
     try:
         timeout_s = _float_env("ENFGUARD_TOOL_JUDGE_TIMEOUT", 4.0)
         try:
-            payload_input = json.dumps(tool_input, ensure_ascii=False)[:1000]
+            payload_input = json.dumps(tool_input, ensure_ascii=False)
         except Exception:
-            payload_input = str(tool_input)[:1000]
+            payload_input = str(tool_input)
         user_msg = f"tool_name: {tool_name}\ninput: {payload_input}"
         reply = _dispatch(
             "unknown_tool_gate",
@@ -415,7 +415,7 @@ def classify_url_risk_with_status(url: str) -> Tuple[Optional[str], str]:
         return None, "failed_open"
     try:
         timeout_s = _float_env("ENFGUARD_TOOL_JUDGE_TIMEOUT", 4.0)
-        user_msg = f"url: {str(url)[:500]}"
+        user_msg = f"url: {str(url)}"
         reply = _dispatch("url_risk", user_msg, timeout_s, _URL_RISK_SYSTEM_PROMPT)
         if not reply:
             return None, "failed_open"
@@ -465,7 +465,7 @@ def classify_package_name_with_status(command: str) -> Tuple[Optional[str], str]
         return None, "failed_open"
     try:
         timeout_s = _float_env("ENFGUARD_TOOL_JUDGE_TIMEOUT", 4.0)
-        user_msg = f"install command: {str(command)[:500]}"
+        user_msg = f"install command: {str(command)}"
         reply = _dispatch("package_name", user_msg, timeout_s, _PACKAGE_NAME_SYSTEM_PROMPT)
         if not reply:
             return None, "failed_open"
@@ -515,7 +515,7 @@ def classify_webshell_with_status(content: str) -> Tuple[Optional[str], str]:
         return None, "failed_open"
     try:
         timeout_s = _float_env("ENFGUARD_TOOL_JUDGE_TIMEOUT", 4.0)
-        user_msg = f"file content:\n{str(content)[:2000]}"
+        user_msg = f"file content:\n{str(content)}"
         reply = _dispatch("webshell", user_msg, timeout_s, _WEBSHELL_SYSTEM_PROMPT)
         if not reply:
             return None, "failed_open"
@@ -571,7 +571,7 @@ def classify_persistence_instruction_with_status(content: str):
         return None, "failed_open"
     try:
         timeout_s = _float_env("ENFGUARD_TOOL_JUDGE_TIMEOUT", 4.0)
-        user_msg = f"content:\n{str(content)[:1500]}"
+        user_msg = f"content:\n{str(content)}"
         reply = _dispatch(
             "persistence_instruction", user_msg, timeout_s,
             _PERSISTENCE_INSTRUCTION_SYSTEM_PROMPT,
@@ -631,7 +631,7 @@ def classify_secret_material_with_status(
         return None, "failed_open"
     try:
         timeout_s = _float_env("ENFGUARD_TOOL_JUDGE_TIMEOUT", 4.0)
-        user_msg = f"tool_result:\n{str(content)[:1500]}"
+        user_msg = f"tool_result:\n{str(content)}"
         reply = _dispatch(
             "secret_material", user_msg, timeout_s, _SECRET_MATERIAL_SYSTEM_PROMPT
         )
@@ -731,7 +731,7 @@ def classify_content_disclosure_with_status(
         return None, "failed_open"
     try:
         timeout_s = _float_env("ENFGUARD_TOOL_JUDGE_TIMEOUT", 4.0)
-        user_msg = f"file content:\n{_content_disclosure_sample(str(content))}"
+        user_msg = f"file content:\n{str(content)}"
         reply = _dispatch(
             "content_disclosure", user_msg, timeout_s,
             _CONTENT_DISCLOSURE_SYSTEM_PROMPT,
@@ -801,7 +801,7 @@ def classify_broad_content_with_status(
         return (), "failed_open"
     try:
         timeout_s = _float_env("ENFGUARD_TOOL_JUDGE_TIMEOUT", 4.0)
-        user_msg = f"tool_result:\n{str(content)[:2000]}"
+        user_msg = f"tool_result:\n{str(content)}"
         reply = _dispatch(
             "content_semantics", user_msg, timeout_s, _BROAD_CONTENT_SYSTEM_PROMPT
         )
@@ -911,7 +911,7 @@ def classify_memory_poison_with_status(content: str) -> Tuple[Optional[str], str
         return None, "failed_open"
     try:
         timeout_s = _float_env("ENFGUARD_TOOL_JUDGE_TIMEOUT", 4.0)
-        user_msg = f"file content:\n{str(content)[:2000]}"
+        user_msg = f"file content:\n{str(content)}"
         reply = _dispatch(
             "memory_poison", user_msg, timeout_s, _MEMORY_POISON_SYSTEM_PROMPT
         )
@@ -988,7 +988,7 @@ def classify_authored_capability_with_status(
         return None, "failed_open"
     try:
         timeout_s = _float_env("ENFGUARD_TOOL_JUDGE_TIMEOUT", 4.0)
-        user_msg = f"file content:\n{str(content)[:2000]}"
+        user_msg = f"file content:\n{str(content)}"
         reply = _dispatch(
             "authored_capability", user_msg, timeout_s,
             _AUTHORED_CAPABILITY_SYSTEM_PROMPT,
@@ -1059,9 +1059,9 @@ def classify_uncertain_action(
     try:
         timeout_s = _float_env("ENFGUARD_TOOL_JUDGE_TIMEOUT", 4.0)
         try:
-            payload_input = json.dumps(tool_input, ensure_ascii=False)[:1000]
+            payload_input = json.dumps(tool_input, ensure_ascii=False)
         except Exception:
-            payload_input = str(tool_input)[:1000]
+            payload_input = str(tool_input)
         user_msg = f"tool_name: {tool_name}\ncommand/input: {payload_input}"
         reply = _dispatch(
             "uncertain_action", user_msg, timeout_s, _UNCERTAIN_ACTION_SYSTEM_PROMPT
@@ -1126,9 +1126,9 @@ def classify_semantic_command(
     try:
         timeout_s = _float_env("ENFGUARD_TOOL_JUDGE_TIMEOUT", 4.0)
         try:
-            payload_input = json.dumps(tool_input, ensure_ascii=False)[:1000]
+            payload_input = json.dumps(tool_input, ensure_ascii=False)
         except Exception:
-            payload_input = str(tool_input)[:1000]
+            payload_input = str(tool_input)
         user_msg = f"tool_name: {tool_name}\ncommand/input: {payload_input}"
         reply = _dispatch(
             "semantic_command", user_msg, timeout_s, _SEMANTIC_COMMAND_SYSTEM_PROMPT
@@ -1146,9 +1146,9 @@ def classify_semantic_command(
 def _judge(tool_name: str, tool_input: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     timeout_s = _float_env("ENFGUARD_TOOL_JUDGE_TIMEOUT", 4.0)
     try:
-        payload_input = json.dumps(tool_input, ensure_ascii=False)[:1000]
+        payload_input = json.dumps(tool_input, ensure_ascii=False)
     except Exception:
-        payload_input = str(tool_input)[:1000]
+        payload_input = str(tool_input)
     user_msg = f"tool_name: {tool_name}\ninput: {payload_input}"
 
     reply = _dispatch("unknown_tool", user_msg, timeout_s, _SYSTEM_PROMPT)

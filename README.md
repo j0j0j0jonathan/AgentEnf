@@ -47,6 +47,7 @@ to stop a real operation.
 | Offline installation check | [Quickstart](docs/quickstart.md) |
 | One temporal rule with typed model evidence | [Decisions example](examples/decisions.yaml) and [backend guide](docs/decisions.md) |
 | Broader deployment pack | [Default preset](examples/presets/agentic-security.yaml): 15 enabled groups, 79 labelled rules |
+| Review-only hardening candidate | [Design, tests and trade-offs](docs/release-candidate-design.md) |
 | Exact thesis evaluation pack | [Evaluation fixture](tests/fixtures/policies/eval_combined_graduated_a3s.yaml): 18 enabled groups, 121 labelled rules |
 | Direct launch, credentials and approvals | [Configuration](docs/configuration.md) |
 
@@ -74,6 +75,8 @@ Most Python tests use stubs. Tests requiring the actual monitor skip unless `ENF
 [Architecture](docs/architecture.md) explains module ownership and extension points. [Evaluation](docs/evaluation.md) links the external A3S/ASEval project and describes its use with AgentEnf. The repository ships runtime source, regression tests, and a [1,269-prompt development corpus](datasets/development-prompts/README.md). Research notes, private traces, external benchmark datasets, and historical result bundles are excluded.
 
 ## Deployment scope
+
+See [release readiness](docs/release-readiness.md) for the October hardening changes, upgrade checks and remaining deployment requirements.
 
 Use one service worker per state directory. Monitor history, pending approvals, and mapper buffers are process-local. Protect access to the service and its trusted policy configuration. Trace files can contain prompts, tool arguments, and model responses.
 

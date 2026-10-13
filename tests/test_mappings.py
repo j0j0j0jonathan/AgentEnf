@@ -280,10 +280,10 @@ def test_inbound_tool_results_are_observed_for_anthropic_and_openai():
     # from content prefixes via _infer_openai_exit_code.
     # "command output\nline two" has no error prefix → exit_code 0.
     assert _event_args(anthropic_events, "ToolResult") == [
-        (5, "toolu_01", "file contents line two", 0)
+        (5, "toolu_01", "file contents\nline two", 0)
     ]
     assert _event_args(openai_events, "ToolResult") == [
-        (6, "call_123", "command output line two", 0)
+        (6, "call_123", "command output\nline two", 0)
     ]
     # By default every ToolResult is paired with Untrusted because the
     # proposing tool name cannot be resolved without state from a prior call.
@@ -515,7 +515,7 @@ def test_anthropic_only_latest_user_tool_results_are_ingested():
     assert _event_args(events, "ToolResult") == []
 
 
-def test_call_id_normalization_preserves_origin_and_block_joins():
+def test_distinct_call_id_spellings_do_not_inherit_trust_or_denial():
     request = {
         "model": "gpt-test",
         "messages": [
@@ -537,5 +537,5 @@ def test_call_id_normalization_preserves_origin_and_block_joins():
         blocked_call_ids=("call_ABC",),
     )
 
-    assert _event_args(local_events, "Untrusted") == []
-    assert _event_args(blocked_events, "Untrusted") == []
+    assert _event_args(local_events, "Untrusted")
+    assert _event_args(blocked_events, "Untrusted")

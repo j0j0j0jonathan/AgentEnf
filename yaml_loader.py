@@ -86,6 +86,7 @@ class IngestJudgeConfig:
     content_semantics: bool = True
     memory_poison: bool = True
     authored_capability: bool = True
+    configuration_change: bool = False
 
 
 @dataclass(frozen=True)
@@ -194,6 +195,7 @@ class HumanApprovalConfig:
     enabled: bool = False
     timeout_seconds: int = 60
     on_timeout: str = "block"
+    allow_headless_bypass: bool = True
 
 
 @dataclass(frozen=True)
@@ -413,6 +415,7 @@ def _parse_ingest_judges(raw: Any, legacy_default: bool) -> IngestJudgeConfig:
         content_semantics=_bool_value(data.get("content_semantics"), master),
         memory_poison=_bool_value(data.get("memory_poison"), master),
         authored_capability=_bool_value(data.get("authored_capability"), master),
+        configuration_change=_bool_value(data.get("configuration_change"), False),
     )
 
 
@@ -863,10 +866,14 @@ def _parse_human_approval(raw: Any) -> HumanApprovalConfig:
             f"human_approval.on_timeout must be one of "
             f"{sorted(_VALID_HUMAN_APPROVAL_TIMEOUT_FALLBACKS)}, got {on_timeout!r}"
         )
+    allow_bypass = _bool_value(data.get("allow_headless_bypass"), defaults.allow_headless_bypass)
+    if not allow_bypass and on_timeout != "block":
+        raise ValueError("human_approval.on_timeout must be block when headless bypass is forbidden")
     return HumanApprovalConfig(
         enabled=_bool_value(data.get("enabled"), defaults.enabled),
         timeout_seconds=timeout,
         on_timeout=on_timeout,
+        allow_headless_bypass=allow_bypass,
     )
 
 
@@ -969,6 +976,7 @@ def _write_active_state(
             "content_semantics": backend.ingest_judges.content_semantics,
             "memory_poison": backend.ingest_judges.memory_poison,
             "authored_capability": backend.ingest_judges.authored_capability,
+            "configuration_change": backend.ingest_judges.configuration_change,
         },
         "judge_fail_modes": judge_fail_modes,
         "user_predicates": [_predicate_state(spec) for spec in predicates],
@@ -977,6 +985,7 @@ def _write_active_state(
             "enabled": human_approval.enabled,
             "timeout_seconds": human_approval.timeout_seconds,
             "on_timeout": human_approval.on_timeout,
+            "allow_headless_bypass": human_approval.allow_headless_bypass,
         },
         "feedback": {
             "enabled": feedback.enabled,

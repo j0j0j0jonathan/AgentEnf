@@ -131,6 +131,7 @@ def tool_call(adapter, content, timeout, system, model=DEFAULT_MODEL):
         choices = sorted(tj._ALLOWED_URL_RISK)
     else:
         labels = {
+            "configuration_change": ["execution_hook", "security_weakening", "benign", "uncertain"],
             "package_name": ["untrusted_install", "benign"],
             "webshell": ["webshell", "benign"],
             "persistence_instruction": ["persistence_instruction", "benign"],

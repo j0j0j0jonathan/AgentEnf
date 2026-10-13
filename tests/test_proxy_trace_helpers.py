@@ -3010,17 +3010,17 @@ async def test_tool_result_denial_echo_not_reingested(monkeypatch):
     monkeypatch.setattr(proxy, "_tool_phase_enforce", fake_tool_phase)
     monkeypatch.setattr(proxy, "_append_session_log", lambda sid, record: None)
 
-    proxy.state.record_blocked_call("call_blocked_echo")
+    proxy.state.record_blocked_call("call_blocked_echo", "s-echo")
     try:
         response = await proxy.tool_result(Request())
     finally:
         with proxy.state.blocked_call_ids_lock:
-            proxy.state.blocked_call_ids.discard("call_blocked_echo")
+            proxy.state.blocked_call_ids.discard(("s-echo", "call_blocked_echo"))
 
     assert json.loads(response.body)["decision"] == "allow"
     assert [e.args for e in seen["events"] if e.name == "ToolResult"]
     assert [e for e in seen["events"] if e.name == "Untrusted"] == []
-    assert _classify_pairs(seen["events"]) == set()
+    assert _classify_pairs(seen["events"]) == {("execution_outcome", "not_executed")}
 
 
 @pytest.mark.anyio

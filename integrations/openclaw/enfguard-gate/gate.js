@@ -225,6 +225,21 @@ function resultExitCode(event) {
   return 0;
 }
 
+function reportedResultOutcome(event, execution) {
+  if (execution.effective_verdict === "block") return "not_executed";
+  if (event?.error || event?.result?.isError === true) return "failed";
+  const result = event?.result;
+  const status = result?.status ?? result?.details?.status;
+  if (["running", "pending", "started"].includes(status)) return "running";
+  const raw = result?.exit_code ?? result?.exitCode ?? result?.details?.exitCode;
+  if (typeof raw === "number" && Number.isInteger(raw)) {
+    return raw === 0 ? "completed" : "failed";
+  }
+  // An after callback alone does not establish completion of a background job,
+  // a committed file revision, or an external side effect.
+  return "unknown";
+}
+
 async function postJson(url, adminToken, sid, body, timeoutMs) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -255,6 +270,9 @@ export const pluginDefinition = {
     const registeredPluginConfig = api?.pluginConfig;
     const initial = gateConfig(registeredPluginConfig, {});
     if (initial && !initial.adminToken) throw new Error("Set ENFGUARD_ADMIN_TOKEN or plugin adminToken");
+    if (initial && !["block", "allow"].includes(initial.failMode)) {
+      throw new Error("AgentEnf failMode must be block or allow");
+    }
     api.on(
       "before_tool_call",
       async (event, context) => {
@@ -405,7 +423,10 @@ export const pluginDefinition = {
           effect_executed: true,
           runtime_decision: "observed_after_execution",
         };
-        toolExecution.effect_executed = true;
+        // Some runtimes emit an after callback for the denial itself. A known
+        // pre-tool Block is not evidence that the operation executed.
+        toolExecution.effect_executed = toolExecution.effective_verdict !== "block";
+        toolExecution.outcome = reportedResultOutcome(event, toolExecution);
         preToolDecisionByCallId.delete(`${cfg.sid}:${call_id}`);
 
         const t0 = Date.now();
@@ -472,7 +493,7 @@ export const pluginDefinition = {
           policy_decision: policyDecision,
           runtime_decision: runtimeDecision,
           effective_verdict: "observe",
-          effect_executed: true,
+          effect_executed: toolExecution.effect_executed,
           result_enforcement_supported: false,
           reason,
           http_status: httpStatus,

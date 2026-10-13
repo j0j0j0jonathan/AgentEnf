@@ -430,6 +430,12 @@ def _configure_ingest_judges() -> None:
             if master and config.authored_capability
             else None
         )
+        from instrlib.configuration_review import (
+            register_configuration_classifier, classify_configuration_with_status,
+        )
+        register_configuration_classifier(
+            classify_configuration_with_status if master and config.configuration_change else None
+        )
         set_tool_judge_enabled(master)
 
         names = (
@@ -445,6 +451,7 @@ def _configure_ingest_judges() -> None:
             "content_semantics",
             "memory_poison",
             "authored_capability",
+            "configuration_change",
         )
         active = [name for name in names if master and getattr(config, name)]
         print(
@@ -1191,11 +1198,11 @@ async def tool_execute(request: Request) -> JSONResponse:
         # The tool will not run; any later "result" for this call is the runtime
         # echoing EnfGuard's own denial reason. Mark it so /v1/tool_result does
         # not re-ingest our verdict text as untrusted external content.
-        state.record_blocked_call(call_id)
+        state.record_blocked_call(call_id, sid)
     elif warning and call_id:
         # WarnToolCall: allowed but flagged. Record the advisory so the next
         # model turn that carries this call's result sees that it was flagged.
-        state.record_tool_warning(call_id, warning)
+        state.record_tool_warning(call_id, warning, sid)
     _append_session_log(
         sid,
         _session_record(
@@ -1252,13 +1259,16 @@ async def tool_result(request: Request) -> JSONResponse:
     proposing = state.snapshot_proposing_tools(sid)
     origins = state.snapshot_tool_origins(sid)
     trusted = _trusted_tool_names()
-    result_content = _preview_value(tool_response)
+    from instrlib.tool_outcome import reported_outcome
+    outcome = reported_outcome(body, blocked=state.is_blocked_call(call_id, sid))
+    result_content = _preview_value(tool_response, limit=None, preserve_whitespace=True)
     result_events = [
         *_clock_events(tid, "tool"),
         *state.switches.emit_events(tid),
         *_policy_active_events(tid, active_policies),
         Event("Turn", tid, rid, sid),
         Event("ToolResult", tid, call_id, result_content, exit_code),
+        Event("Classify", tid, call_id, "execution_outcome", outcome),
     ]
     # Source-based trust: external origin -> untrusted; local -> trusted;
     # unknown origin -> fall back to the tool-name allowlist (legacy).
@@ -1269,7 +1279,7 @@ async def tool_result(request: Request) -> JSONResponse:
         untrusted = False
     else:
         untrusted = bool(call_id) and proposing.get(call_id, "") not in trusted
-    if call_id and state.is_blocked_call(call_id):
+    if call_id and state.is_blocked_call(call_id, sid):
         # Denial echo: EnfGuard already blocked this call, so the tool never ran
         # and this "result" is the echo of our own block reason. Do not run the
         # content-risk classifiers (Untrusted / instruction_like /
@@ -1342,7 +1352,7 @@ def _format_tool_advisory(message: str) -> str:
     )
 
 
-def _inject_tool_warning_advisories(body: JsonObject, api_format: str) -> int:
+def _inject_tool_warning_advisories(body: JsonObject, api_format: str, sid: str = "") -> int:
     """Prepend recorded EnfGuard advisories to the matching tool_result in the
     upstream request body (Anthropic content-block or OpenAI role=tool forms).
 
@@ -1361,7 +1371,7 @@ def _inject_tool_warning_advisories(body: JsonObject, api_format: str) -> int:
             if not isinstance(item, dict) or item.get("type") != "function_call_output":
                 continue
             call_id = str(item.get("call_id") or item.get("id") or "")
-            warn = state.pop_tool_warning(call_id) if call_id else None
+            warn = state.pop_tool_warning(call_id, sid) if call_id else None
             if not warn:
                 continue
             advisory = _format_tool_advisory(warn)
@@ -1383,7 +1393,7 @@ def _inject_tool_warning_advisories(body: JsonObject, api_format: str) -> int:
             continue
         if message.get("role") == "tool":  # OpenAI tool result
             call_id = str(message.get("tool_call_id") or message.get("id") or "")
-            warn = state.pop_tool_warning(call_id) if call_id else None
+            warn = state.pop_tool_warning(call_id, sid) if call_id else None
             if not warn:
                 continue
             advisory = _format_tool_advisory(warn)
@@ -1402,7 +1412,7 @@ def _inject_tool_warning_advisories(body: JsonObject, api_format: str) -> int:
             if not isinstance(block, dict) or block.get("type") != "tool_result":
                 continue
             call_id = str(block.get("tool_use_id") or block.get("id") or "")
-            warn = state.pop_tool_warning(call_id) if call_id else None
+            warn = state.pop_tool_warning(call_id, sid) if call_id else None
             if not warn:
                 continue
             advisory = _format_tool_advisory(warn)
@@ -1415,6 +1425,17 @@ def _inject_tool_warning_advisories(body: JsonObject, api_format: str) -> int:
                 block["content"] = advisory
             injected += 1
     return injected
+
+
+def _response_turn_events(inbound_events: list[Event]) -> list[Event]:
+    """Re-emit request identity at the response trace position.
+
+    Request and response are separate monitor observations even when they carry
+    the same tid and wall timestamp. Current-position Turn/Completion joins
+    therefore need Turn in the response batch itself. Copy the original rid/sid
+    rather than deriving identity from model-controlled output.
+    """
+    return [event for event in inbound_events if event.name == "Turn"]
 
 
 async def _run_enforced_request(
@@ -1445,7 +1466,7 @@ async def _run_enforced_request(
         include_session_start=state.include_session_start(sid),
         proposing_tool_for_call_id=state.snapshot_proposing_tools(sid),
         trusted_tool_names=_trusted_tool_names(),
-        blocked_call_ids=state.blocked_call_ids_snapshot(),
+        blocked_call_ids=state.blocked_call_ids_snapshot(sid),
         origin_for_call_id=state.snapshot_tool_origins(sid),
     )
     inbound_events = _clock_events(tid, "request") + state.switches.emit_events(tid) + inbound_events
@@ -1453,7 +1474,7 @@ async def _run_enforced_request(
     # matching tool_result in the body we forward upstream. Done AFTER
     # extract_inbound_events so the advisory never re-arms our ingest classifiers.
     if state.has_tool_warnings():
-        _inject_tool_warning_advisories(body, api_format)
+        _inject_tool_warning_advisories(body, api_format, sid)
     cau_in, judge_reasons_in, enfguard_ms_in = await _phase1_enforce(tid, sid, inbound_events)
 
     cau_in = await _resolve_approvals(tid, sid, cau_in, "inbound")
@@ -1528,7 +1549,8 @@ async def _run_enforced_request(
     )
     state.record_proposing_tools(sid, collect_proposing_tools(outbound_events))
     state.record_tool_origins(sid, collect_tool_origins(outbound_events))
-    outbound_events = _clock_events(tid, "response") + state.switches.emit_events(tid) + outbound_events
+    outbound_events = (_clock_events(tid, "response") + state.switches.emit_events(tid)
+                       + _response_turn_events(inbound_events) + outbound_events)
     preeval_events = inbound_events + outbound_events if _aggressive_batching_enabled() else outbound_events
     cau_out, judge_reasons_out, enfguard_ms_out = await _phase2_enforce(tid, sid, outbound_events, preeval_events)
     cau_out = await _resolve_approvals(tid, sid, cau_out, "outbound")
@@ -1853,7 +1875,8 @@ async def _run_streaming_request(
     )
     state.record_proposing_tools(sid, collect_proposing_tools(outbound_events))
     state.record_tool_origins(sid, collect_tool_origins(outbound_events))
-    outbound_events = _clock_events(tid, "response") + state.switches.emit_events(tid) + outbound_events
+    outbound_events = (_clock_events(tid, "response") + state.switches.emit_events(tid)
+                       + _response_turn_events(inbound_events) + outbound_events)
     preeval_events = inbound_events + outbound_events if _aggressive_batching_enabled() else outbound_events
     cau_out, judge_reasons_out, enfguard_ms_out = await _phase2_enforce(
         tid,
@@ -3046,6 +3069,8 @@ async def _resolve_approvals(
     #   block  — convert Approve → hard Block (headless fail-closed)
     #   warn   — convert Approve → Warn (tool proceeds; dual-use caution to model)
     approval_mode = os.environ.get("ENFGUARD_APPROVAL_MODE", "interactive").strip().lower()
+    if not state.human_approval.allow_headless_bypass and approval_mode in {"allow", "warn"}:
+        approval_mode = "block"
     if approval_mode == "allow":
         return cau_enc
     if approval_mode == "block":

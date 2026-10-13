@@ -441,6 +441,7 @@ policies:
         "enabled": True,
         "timeout_seconds": 12,
         "on_timeout": "allow",
+        "allow_headless_bypass": True,
     }
     assert {entry["id"] for entry in state["switches"]} == {"allow_output", "enforcement_mode"}
 
@@ -531,6 +532,7 @@ policies: []
         "content_semantics": True,
         "memory_poison": True,
         "authored_capability": True,
+        "configuration_change": False,
     }
 
 

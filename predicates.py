@@ -569,9 +569,9 @@ def trace_pre_evaluation(
     return _score(predicate, content, result, merged_extra)
 
 
-# Documentation marker for the current judge contract. It is deliberately
-# not part of `_judge_cache_key`: sessions are the cache-invalidation unit.
-_JUDGE_CONTRACT_VERSION = "2026-05-05.label-reason.v1"
+# Include the wire/input contract in cache identity: truncated-input decisions
+# must not survive an upgrade to full-input classification.
+_JUDGE_CONTRACT_VERSION = "2026-10-13.full-input.v2"
 
 # Keep the judge wire format tiny. Small judge models are prone to treating
 # long schemas as text to complete, so the runtime asks for one decision bit
@@ -747,12 +747,11 @@ def _write_pre_eval_result(
 def _pre_evaluated_judge_result(predicate_name: str, content: str) -> JudgeResult | None:
     """Return this turn's pre-evaluated score for monitor-side predicate calls.
 
-    The EnfGuard Python-function bridge can corrupt non-ASCII string arguments
-    before they reach this process. The proxy already judged the correct event
-    text immediately before querying EnfGuard, so the monitor-side function can
-    replay that score for the current tid/phase/predicate. Exact content
-    matches are preferred; a single unambiguous predicate result is used as a
-    fallback for corrupted non-ASCII arguments.
+    Only an exact content match may reuse evidence. A previous workaround
+    returned the only score in a batch for ANY argument to tolerate a broken
+    Unicode bridge. Temporal policies may ask about another, earlier message;
+    reusing the current message's score would silently change the verdict.
+    Unknown content must follow the normal independent classification path.
     """
 
     tid = _current_tid()
@@ -787,8 +786,6 @@ def _pre_evaluated_judge_result(predicate_name: str, content: str) -> JudgeResul
     exact = [entry for entry in matches if entry.get("content") == content]
     if exact:
         return _pre_eval_entry_to_result(exact[-1])
-    if len(matches) == 1:
-        return _pre_eval_entry_to_result(matches[0])
     return None
 
 
@@ -1033,17 +1030,12 @@ def _dispatch_parallel(
 def _judge_cache_key(predicate_name: str, content: str, cache_extra: tuple[Any, ...]) -> str:
     """Compute the per-content cache key used inside one session.
 
-    The key intentionally does NOT include the session id — partitioning
-    by session is done at the storage layer (per-sid in-memory dict and
-    per-sid file). It also does NOT include ``_JUDGE_CONTRACT_VERSION``:
-    sessions are the unit of cache invalidation, so a contract bump is
-    naturally absorbed by new sessions starting fresh, while existing
-    sessions keep whatever the operator already saw and curated. The
-    constant is preserved as a documentation marker but no longer
-    affects routing.
+    Session partitioning is handled by the storage layer. The contract version
+    invalidates decisions made under older input or output semantics, including
+    operator overrides that must be reconsidered under the new contract.
     """
 
-    payload = [predicate_name, content, _jsonable(cache_extra)]
+    payload = [_JUDGE_CONTRACT_VERSION, predicate_name, content, _jsonable(cache_extra)]
     return hashlib.blake2b(
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
             "utf-8"
@@ -1316,8 +1308,8 @@ def _call_judge_api(
     if backend == "openai_decisions":
         from instrlib import decisions
         with _MODEL_SLOTS:
-            data = decisions.ask(_sanitize(content)[:4000],
-                [decisions.predicate_question("criterion", _sanitize(system_prompt)[:4000])],
+            data = decisions.ask(_sanitize(content),
+                [decisions.predicate_question("criterion", _sanitize(system_prompt))],
                 max(timeout_ms, 1) / 1000, model=model)
         return json.dumps(decisions.predicate_result(data))
 
@@ -1332,8 +1324,8 @@ def _call_judge_api(
             "</repair>"
         )
     user_msg = (
-        f"Criterion:\n<criterion>\n{_sanitize(system_prompt)[:4000]}\n</criterion>\n\n"
-        f"<input>\n{_sanitize(content)[:4000]}\n</input>"
+        f"Criterion:\n<criterion>\n{_sanitize(system_prompt)}\n</criterion>\n\n"
+        f"<input>\n{_sanitize(content)}\n</input>"
         f"{repair}"
     )
     return _dispatch_judge(
@@ -1411,10 +1403,10 @@ def _call_batch_judge_api(
         # Decisions questions share ONE input. Never combine different inputs.
         groups = {}
         for index, task in enumerate(tasks):
-            groups.setdefault(_sanitize(task.content)[:4000], []).append((index, task))
+            groups.setdefault(_sanitize(task.content), []).append((index, task))
         results = []
         for content, group in groups.items():
-            questions = [decisions.predicate_question(str(index), _sanitize(task.system_prompt)[:4000])
+            questions = [decisions.predicate_question(str(index), _sanitize(task.system_prompt))
                          for index, task in group]
             with _MODEL_SLOTS:
                 data = decisions.ask(content, questions, max(timeout_ms, 1) / 1000, model=model)
@@ -1448,8 +1440,8 @@ def _call_batch_judge_api(
                 {
                     "id": index,
                     "predicate": task.predicate_name,
-                    "criterion": _sanitize(task.system_prompt)[:4000],
-                    "input": _sanitize(task.content)[:4000],
+                    "criterion": _sanitize(task.system_prompt),
+                    "input": _sanitize(task.content),
                 }
                 for index, task in enumerate(tasks)
             ],

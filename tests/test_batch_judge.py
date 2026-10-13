@@ -234,7 +234,7 @@ def test_judge_override_writes_session_scoped_cache_entry(tmp_path, monkeypatch)
     assert result.is_override is True
 
 
-def test_pre_eval_result_replays_for_corrupted_monitor_argument(tmp_path, monkeypatch):
+def test_pre_eval_result_requires_exact_monitor_argument(tmp_path, monkeypatch):
     monkeypatch.setattr(predicates, "PRE_EVAL_RESULTS_FILE", tmp_path / "pre_eval_results.jsonl")
     monkeypatch.setattr(predicates, "_current_tid", lambda: 7)
     monkeypatch.setattr(predicates, "_current_sid", lambda: "s-test")
@@ -256,13 +256,12 @@ def test_pre_eval_result_replays_for_corrupted_monitor_argument(tmp_path, monkey
     predicates.trace_pre_evaluation("no_emoji_in_output", "😊", original)
     replayed = predicates._pre_evaluated_judge_result("no_emoji_in_output", "\xa0\r9j\x0b8")
 
-    assert replayed is not None
-    assert replayed.replayed_pre_eval is True
-    assert replayed.raw_score == 1.0
-    assert replayed.reason == "emoji input"
-    assert predicates._score("no_emoji_in_output", "\xa0\r9j\x0b8", replayed) == 1.0
-    # The pre-evaluation row is the one the UI should show; replaying the
-    # result for EnfGuard must not add a second corrupted-content trace row.
+    assert replayed is None
+    assert predicates._pre_evaluated_judge_result("no_emoji_in_output", "plain text") is None
+    exact = predicates._pre_evaluated_judge_result("no_emoji_in_output", "😊")
+    assert exact is not None
+    assert exact.raw_score == 1.0
+    assert exact.replayed_pre_eval is True
     assert len(traced) == 1
 
 

@@ -44,9 +44,13 @@ JsonObject = dict[str, Any]
 
 
 def _call_id_key(value: Any) -> str:
-    """Normalize provider/runtime call-id spelling for state-table joins."""
+    """Preserve opaque call identity; adapters must explicitly map aliases.
 
-    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+    Removing punctuation or folding case merges distinct tool invocations and
+    can give an external result another call's trusted origin or denial status.
+    """
+
+    return str(value or "")
 
 
 def extract_inbound_events(
@@ -501,7 +505,7 @@ def _anthropic_tool_result_events(
         if not isinstance(block, dict) or block.get("type") != "tool_result":
             continue
         call_id = str(block.get("tool_use_id") or block.get("id") or "")
-        text = _preview_value(block.get("content"))
+        text = _preview_value(block.get("content"), limit=None, preserve_whitespace=True)
         exit_code = 1 if bool(block.get("is_error")) else 0
         events.append(Event("ToolResult", tid, call_id, text, exit_code))
         if call_id and _call_id_key(call_id) in blocked_call_ids:
@@ -514,7 +518,7 @@ def _anthropic_tool_result_events(
             events,
             tid,
             call_id,
-            _preview_value(block.get("content"), preserve_whitespace=True),
+            _preview_value(block.get("content"), limit=None, preserve_whitespace=True),
             untrusted=_tool_result_is_untrusted(
                 call_id, proposing_tools, trusted_tool_names, origins
             ),
@@ -541,7 +545,7 @@ def _openai_tool_result_events(
     """
 
     call_id = str(message.get("tool_call_id") or message.get("id") or "")
-    text = _preview_value(message.get("content"))
+    text = _preview_value(message.get("content"), limit=None, preserve_whitespace=True)
     exit_code = _infer_openai_exit_code(text)
     events: list[Event] = [Event("ToolResult", tid, call_id, text, exit_code)]
     if call_id and _call_id_key(call_id) in blocked_call_ids:
@@ -552,7 +556,7 @@ def _openai_tool_result_events(
         events,
         tid,
         call_id,
-        _preview_value(message.get("content"), preserve_whitespace=True),
+        _preview_value(message.get("content"), limit=None, preserve_whitespace=True),
         untrusted=_tool_result_is_untrusted(
             call_id, proposing_tools, trusted_tool_names, origins
         ),
@@ -677,7 +681,7 @@ _TOOL_RESULT_CONTENT_LIMIT = 2000
 
 
 def _preview_value(
-    value: Any, limit: int = _TOOL_RESULT_CONTENT_LIMIT, *,
+    value: Any, limit: int | None = _TOOL_RESULT_CONTENT_LIMIT, *,
     preserve_whitespace: bool = False,
 ) -> str:
     """Extract and truncate tool-result content for the EnfGuard event stream.

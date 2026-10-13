@@ -36,6 +36,24 @@ test('missing token is rejected at registration', () => {
   finally { if (previous !== undefined) process.env.ENFGUARD_ADMIN_TOKEN = previous; }
 });
 
+test('a misspelled failure mode cannot silently allow tool execution', () => {
+  assert.throws(() => register({ failMode: 'closed' }), /failMode/);
+  assert.throws(() => register({ failMode: 'blok' }), /failMode/);
+});
+
+test('after callback for a blocked call preserves non-execution', async (t) => {
+  const payloads = [];
+  t.mock.method(globalThis, 'fetch', async (_, options) => {
+    payloads.push(JSON.parse(options.body));
+    return { ok: true, status: 200, json: async () => ({ decision: 'block' }) };
+  });
+  const h = register({ sid: 'denial-result' });
+  assert.equal((await h.before_tool_call(event)).block, true);
+  await h.after_tool_call({ ...event, result: 'Operation blocked by AgentEnf' });
+  assert.equal(payloads[1].tool_execution.effect_executed, false);
+  assert.equal(payloads[1].tool_execution.effective_verdict, 'block');
+});
+
 test('failed result delivery does not suppress the next identical observation', async (t) => {
   for (const failure of ['transport', 'http', 'malformed']) {
     const payloads = [];
@@ -97,4 +115,23 @@ test('connection failure is distinguished from a policy block', async (t) => {
   const record = JSON.parse(result.blockReason.split('[EnfAgent enforcement] ')[1]);
   assert.equal(record.kind, 'service_failure');
   assert.deepEqual(record.rules, []);
+});
+
+test('after hook distinguishes reported process completion from a returned callback', async (t) => {
+  const payloads = [];
+  t.mock.method(globalThis, 'fetch', async (_, options) => {
+    payloads.push(JSON.parse(options.body));
+    return { ok: true, status: 200, json: async () => ({ decision: 'allow' }) };
+  });
+  const h = register({ sid: 'outcomes' });
+  for (const [result, expected] of [
+    ['Done!', 'unknown'],
+    [{ details: { status: 'running', exitCode: 0 } }, 'running'],
+    [{ exitCode: 0 }, 'completed'],
+    [{ exitCode: 2 }, 'failed'],
+    [{ isError: true, exitCode: 0 }, 'failed'],
+  ]) {
+    await h.after_tool_call({ ...event, result });
+    assert.equal(payloads.at(-1).tool_execution.outcome, expected);
+  }
 });

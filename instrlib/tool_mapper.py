@@ -1304,14 +1304,14 @@ _RESDEV_DOWNLOAD_RE = re.compile(
 # (live finding INIT-STD-01b / Run 2 tid 15).
 _SCRIPT_EXT_RE = r"\.(?:sh|bash|zsh|ksh|py|pyw|pyc|pl|rb|js|cjs|mjs|ts|php|lua|run|bin|out|jar|ps1)\b"
 _RESDEV_SCRIPT_EXEC_RE = re.compile(
-    r"(?<![\w-])(?:bash|sh|zsh|ksh)\s+[^\n|;&]*" + _SCRIPT_EXT_RE        # bash file.sh (lookbehind: `du -sh` flag is not sh)
-    + r"|\b(?:python[23]?|node|ruby|perl|php)\s+[^\n|;&]*" + _SCRIPT_EXT_RE  # python x.py
+    r"(?<![\w.-])(?:bash|sh|zsh|ksh)[ \t]+[^\n|;&]*" + _SCRIPT_EXT_RE        # bash file.sh (lookbehind: `du -sh` flag is not sh)
+    + r"|(?<![\w.-])(?:python[23]?|node|ruby|perl|php)[ \t]+[^\n|;&]*" + _SCRIPT_EXT_RE  # python x.py
     # bash payload (extension-less, not `bash -c`). The negative lookahead also
     # rejects a following SHELL KEYWORD so a function/loop/conditional body that
     # happens to sit after a bare `bash` token (e.g. a `#!/bin/bash` header whose
     # shebang slipped through, or `bash; function f { … }`) is not misread as a
     # script invocation. A real `bash payload` / `bash ./run` still matches.
-    + r"|(?<![\w-])(?:bash|sh|zsh|ksh)\b\s+(?!-)"
+    + r"|(?<![\w.-])(?:bash|sh|zsh|ksh)\b[ \t]+(?!-)"
     + r"(?!(?:function|if|then|elif|else|fi|for|while|until|do|done|case|esac|select|time|coproc|return|in|local|export)\b)"
     + r"[\w./~][\w./~-]*"
     + r"|(?:^|;|&&|\|\|?|&)\s*\./\S+",                         # ./something in COMMAND position (not an arg like `rm ./x`)
@@ -2788,7 +2788,7 @@ _IMPACT_PROTECTED_OVERWRITE_RE = re.compile(
 # not false positives. Used only by the single-file rules below.
 # Anchored so a workspace dir literally named "etc" (`./etc/...`) cannot match:
 # the system root must sit at start-of-segment, after whitespace, or after `=`.
-_IMPACT_SYS_FILE = r"(?:^|\s|=)/(?:etc|boot|bin|sbin|lib|lib64|usr|sys|proc)\b"
+_IMPACT_SYS_FILE = r"(?:^|[ \t]|=)/(?:etc|boot|bin|sbin|lib|lib64|usr|sys|proc)\b"
 # Non-recursive delete of a core system file (the recursive forms are already
 # caught by _IMPACT_DELETE_RE). Verb and target are bound within ONE command
 # segment ([^|;&\n]) so `cat /etc/hosts; rm /tmp/x` does not match. Also covers a
@@ -2936,7 +2936,7 @@ def classify_impact_kind(command: str) -> Optional[str]:
     """
     if not command:
         return None
-    command = _deobfuscate(command)
+    command = _deobfuscate(_mask_literal_search_patterns(command))
     if _is_command_preview(command):
         return None
     # A pure search/filter pipeline (grep/rg/egrep for a pattern, optionally piped
@@ -2992,8 +2992,13 @@ def classify_impact_kind(command: str) -> Optional[str]:
     # are excluded by _is_agent_review_scratch_rm_rf and stay destructive.
     if _is_agent_review_scratch_rm_rf(command) or _is_clean_recreate_scratch(command):
         return None
-    if _IMPACT_DELETE_RE.search(command):
-        if _IMPACT_PROTECTED_PATH_RE.search(command):
+    delete_matches = list(_IMPACT_DELETE_RE.finditer(command))
+    if delete_matches:
+        # Bind the protected path to the deleting command, not any other read,
+        # destination, or executable appearing later in a compound command.
+        delete_segments = [re.split(r"[\n|;&]", command[m.start():], maxsplit=1)[0]
+                           for m in delete_matches]
+        if any(_IMPACT_PROTECTED_PATH_RE.search(segment) for segment in delete_segments):
             return "destructive_protected"
         if _OPS_TREE_WIPE_RE.search(command):
             return "destructive_ops_tree"
@@ -9083,12 +9088,12 @@ def _map_tool_call_impl(
     unknown_gate_auto_allow = False
     opaque_effect_capability = False
 
-    # input_preview: first 200 chars of JSON-serialized input, single-line
+    # ToolCall input is policy evidence, not a UI preview. Preserve the full JSON.
     try:
         raw_json = json.dumps(tool_input, ensure_ascii=False)
     except Exception:
         raw_json = str(tool_input)
-    input_preview = raw_json[:200]
+    input_preview = raw_json
 
     category = _categorize_tool(tool_name)
     if category is None:
@@ -10337,7 +10342,11 @@ def map_tool_call(
         # Mark this tid so any gated ingest judge that runs during mapping has its
         # model call captured (instrlib/judge_capture.py). Reset on exit.
         with judge_capture.capturing(tid):
-            return _map_tool_call_impl(tid, call_id, tool_name, tool_input)
+            events = _map_tool_call_impl(tid, call_id, tool_name, tool_input)
+            canonical = next((e.args[2] for e in events if e.name == "ToolCall"), "")
+            from instrlib.configuration_review import configuration_events
+            events.extend(configuration_events(tid, call_id, canonical, tool_input))
+            return events
     finally:
         _CLASSIFIER_NS[tid] = _CLASSIFIER_NS.get(tid, 0) + (_cls_time.perf_counter_ns() - _t0)
 

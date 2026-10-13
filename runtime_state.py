@@ -77,10 +77,10 @@ class ProxyState:
         # (keys/sudoers/cron/service/import-hook)") and would otherwise be
         # re-ingested as untrusted external content and re-fire content_risk
         # classifiers (persistence_instruction, instruction_like, secret_material),
-        # contaminating the same-session provenance window. Keyed globally because
-        # the echoed result can arrive under a different/empty session id than the
-        # block. Reset per run by _reset_run_scoped_state.
-        self.blocked_call_ids: set[str] = set()
+        # contaminating the same-session provenance window. Scope by session: a
+        # reused call id in another session must never suppress real evidence.
+        # Integrations must propagate the same sid at both boundaries.
+        self.blocked_call_ids: set[tuple[str, str]] = set()
         self.blocked_call_ids_lock = threading.Lock()
         # Warnings recorded for WARNED-but-allowed tool calls (call_id -> message).
         # A WarnToolCall returns decision "allow", so the runtime runs the tool and
@@ -90,7 +90,7 @@ class ProxyState:
         # own event extraction, so it never re-arms our ingest classifiers). The
         # entry is popped on first injection, so the model sees it once — on the
         # turn immediately after the flagged action. Reset per run.
-        self.tool_warnings: dict[str, str] = {}
+        self.tool_warnings: dict[tuple[str, str], str] = {}
         self.tool_warnings_lock = threading.Lock()
         # Frozen snapshot of ``backend.trusted_tool_names`` from YAML.
         # Tool results whose proposing tool name is in this set are not
@@ -152,45 +152,45 @@ class ProxyState:
         with self.tool_origins_lock:
             return dict(self.tool_origins.get(sid, {}))
 
-    def record_blocked_call(self, call_id: str) -> None:
+    def record_blocked_call(self, call_id: str, sid: str = "") -> None:
         """Remember a call_id that EnfGuard blocked, so a later echo of our own
         denial reason is not re-ingested as untrusted external content."""
 
         if not call_id:
             return
         with self.blocked_call_ids_lock:
-            self.blocked_call_ids.add(call_id)
+            self.blocked_call_ids.add((sid, call_id))
 
-    def is_blocked_call(self, call_id: str) -> bool:
+    def is_blocked_call(self, call_id: str, sid: str = "") -> bool:
         """True if ``call_id`` was blocked earlier this run (denial-echo guard)."""
 
         if not call_id:
             return False
         with self.blocked_call_ids_lock:
-            return call_id in self.blocked_call_ids
+            return (sid, call_id) in self.blocked_call_ids
 
-    def blocked_call_ids_snapshot(self) -> frozenset[str]:
+    def blocked_call_ids_snapshot(self, sid: str = "") -> frozenset[str]:
         """Snapshot of blocked call ids for the chat-request denial-echo guard."""
 
         with self.blocked_call_ids_lock:
-            return frozenset(self.blocked_call_ids)
+            return frozenset(call_id for session, call_id in self.blocked_call_ids if session == sid)
 
-    def record_tool_warning(self, call_id: str, message: str) -> None:
+    def record_tool_warning(self, call_id: str, message: str, sid: str = "") -> None:
         """Remember the advisory for a warned-but-allowed tool call so it can be
         surfaced to the model on the next turn."""
 
         if not call_id or not message:
             return
         with self.tool_warnings_lock:
-            self.tool_warnings[call_id] = message
+            self.tool_warnings[(sid, call_id)] = message
 
-    def pop_tool_warning(self, call_id: str) -> str | None:
+    def pop_tool_warning(self, call_id: str, sid: str = "") -> str | None:
         """Return and clear the recorded advisory for ``call_id`` (once-only)."""
 
         if not call_id:
             return None
         with self.tool_warnings_lock:
-            return self.tool_warnings.pop(call_id, None)
+            return self.tool_warnings.pop((sid, call_id), None)
 
     def has_tool_warnings(self) -> bool:
         with self.tool_warnings_lock:
