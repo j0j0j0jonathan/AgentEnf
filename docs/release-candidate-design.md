@@ -13,7 +13,7 @@ as artifact provenance. A larger number of rules is not itself an improvement.
 
 The candidate is `examples/presets/release-candidate.yaml`, reproducibly generated
 by `experiments/release_candidate/build_profile.py` from the frozen evaluation
-fixture. Its header records the source hash. It has **19 enabled groups and 124
+fixture. Its header records the source hash. It has **19 enabled groups and 128
 labelled rules**, compared with the source's 18/121. It is not selected by default.
 
 ## Implemented now
@@ -220,3 +220,200 @@ operator, not a classifier deciding that an instruction sounds reasonable.
    frozen. Record operator approvals and task success separately.
 
 No push, default-profile activation or shipping action has been performed.
+
+
+## Follow-up review: split persistence, approval scope and input budgets
+
+The previous local candidate was committed by another agent as `151fda8` on
+`release-candidate`. That commit bundles earlier audit fixes as well as candidate
+work. The follow-up below is uncommitted; unrelated frontend changes are excluded.
+
+### Cross-call persistence (narrow implementation)
+
+`dangerous_script_then_schedule` joins an earlier ToolPlanned dangerous write to
+a later schedule target in the same session within 600 seconds. New versioned
+Classify dimensions `dangerous_write_target_v2` and `schedule_target_v2` carry a
+JSON pair of operator-assigned runtime namespace and normalized absolute lexical
+path. The OpenClaw hook takes `runtimeNamespace` from plugin configuration (or
+ENFGUARD_RUNTIME_NAMESPACE), never from model tool arguments. Choose a distinct
+namespace per isolated filesystem and keep it stable within the trajectory.
+The authenticated pre-tool endpoint emits these facts; model proposals alone do
+not create them.
+
+Current coverage: structured full-content writes and literal absolute script
+references in service ExecStart/Pre/Post or simple cron entries. A dangerous body
+is recognized by existing deterministic content checks. There is no basename
+fallback or guessed working directory. Missing namespace, relative paths, shell
+indirection, edit fragments and opaque scheduling commands remain uncovered by
+this new join and require the existing review posture. Earlier untrusted origin
+alone is not converted into dangerous content: source tracking remains separate.
+
+This is deliberately a conservative **proposal-history** rule. It can block even
+if the earlier write failed, was blocked, or was later overwritten. It does not
+claim verified bytes, a completed write, causal dataflow, or symlink-safe identity.
+Existing basename-based provenance clauses are not removed by this patch, and
+can still over-correlate independently. The outcome-aware revision prototype is
+still not wired into live policies. Replacing legacy provenance requires those
+stronger runtime contracts, not merely this temporal formula.
+
+### Approval scope and matched evaluation
+
+Strict approval applies to every Approve, including credential access and
+privilege changes. Therefore the candidate can reduce hard policy false positives
+and still worsen unattended task completion. No utility improvement is claimed.
+
+`experiments/release_candidate/prepare_matched.py` prepares three Decisions-based
+profiles: baseline with legacy headless approval, baseline with strict approval,
+and candidate with strict approval. Compare the latter two for candidate changes;
+compare the first two for the approval-posture effect. The legacy arm is for an
+isolated disposable evaluation only. The script prepares profiles and a plan,
+not a live runner or completed evaluation. Freeze exact matched cases, image,
+agent model and repetitions before execution. Record policy Blocks separately
+from denied approvals and classifier failures. Human-assisted utility is a
+separate experiment.
+
+### Classifier input budget
+
+ENFGUARD_CLASSIFIER_MAX_INPUT_BYTES defaults to 65536 UTF-8 bytes and must be
+positive. Routed and predicate API dispatch (including Decisions) checks the
+payload/criteria before sending; serialized batch overhead may also cause a
+batch to exceed the cap. Nothing is silently truncated. Configuration review
+exposes input_budget_exceeded and remains uncertain, requiring approval. Other
+classifiers retain their configured failure behavior, including fail-open routed
+adapters; a cap does not make them fail closed. Predicate caches of already
+classified complete inputs remain usable. This bounds individual API inputs,
+not total task spend, tool evidence in traces, or all memory use. Real token
+usage, tail latency and budget-failure rates must be measured before tuning it.
+
+Validation: 3,484 Python tests passed, including six real-monitor cross-call
+identity cases; 11 OpenClaw JavaScript tests passed. No live benchmark or paid
+classifier call was made. Frontend files and builds were left to the user's
+ongoing redesign.
+
+
+## Latest parser and budget review (supersedes the narrow follow-up above)
+
+The current candidate has 19 groups and 128 labelled rules. The temporal clauses
+now correlate both write→schedule and schedule→write over 24 hours of retained
+monitor history, without requiring the same session. Namespace and absolute
+lexical path still must match. The namespace is operator-configured: it is not
+cryptographically bound to the admin token, and hooks sharing credentials are
+trusted to report it honestly. Restarting/resetting the monitor loses history.
+
+The parser handles literal redirections, command lists/pipelines, simple shell-c
+wrappers, env/nohup/timeout, selected interpreter flags, absolute cd followed by
+&& and a relative script, systemd execution prefixes and ExecReload/Stop/StopPost/
+Condition, and cron month/day names. It is not a shell interpreter. Unresolved
+or partially resolved scheduling emits schedule_target_unresolved and requires
+approval. Native schedule mutations, including scheduled_routine, parse explicit
+nested command/cmd fields; agent-turn prose remains unresolved and reviewable.
+Do not interpret a guessed path in prose as a verified execution target.
+
+Missing runtimeNamespace warns at OpenClaw registration and makes schedules
+explicitly unresolved. Path handles use ASCII JSON escaping. Authored secret-read
+plus send capability contributes to dangerous-write evidence; this is structural
+co-occurrence, not proof of tainted dataflow. Full-content structured writes are
+covered; arbitrary shell writes and edit fragments remain a limitation.
+
+Untrusted oversized tool results emit judge_status=input_budget_exceeded before
+semantic heuristics can skip them. Deterministic content checks still run. A new
+candidate clause requires approval for later privilege escalation, persistence
+or exfiltration in the same session within 24 hours. It does not label the content
+benign or silently trim it. Unknown/misclassified actions and other sessions remain
+limitations. Predicate budget errors retain an explicit reason and configured
+fail-closed semantics; those may themselves cause false positives. Budget config
+is validated at proxy startup and parsed through a cache rather than on every
+classification. No chunking claim is made: arbitrary chunking can miss relations
+across chunks and would require a separate aggregation contract.
+
+Evaluation preparation now produces a 2×2 of baseline/candidate × legacy/strict
+approval, plus OFF, with at least three repetitions. Every ON arm uses Decisions;
+none is the original thesis configuration. OFF has no classifier. These are
+extreme approval postures for sensitivity analysis, not mathematical bounds on
+adaptive human-assisted task outcomes. The exact matched case list still needs
+freezing; the seed list is a diagnostic smoke test, not a held-out benchmark.
+
+### Newly observed release risk: large clock advances
+
+A real-monitor test jumping from timestamp 1000 to 87401 exceeded the existing
+20-second query timeout while the monitor emitted intermediate timepoints. The
+proxy quarantined it. A 1200-second jump passed, but took substantial time. This
+is a separate monitor/protocol clock-advance problem, not proof that 24-hour idle
+operation works. Expiry semantics were tested with a scaled three-second interval;
+that does not resolve long-idle performance. Investigate efficient clock advance
+before shipping this profile for long-lived deployments. Do not silently reset
+history to work around the timeout.
+
+Unbounded ONCE is not adopted: proposed writes, later overwrites, deletion,
+namespace reuse and revoked schedules need lifecycle/retention semantics. The
+claim that history costs exactly one entry per path is not established for this
+MFOTL monitor and repeated proposal trace.
+
+Validation: full suite 3506 passed (two dependency warnings), plus two subsequent
+focused parser/evaluation-matrix tests passed; 11 OpenClaw tests passed. No frontend
+files or build were touched. No paid API calls or live trajectories were run.
+
+
+## Round 3: lifecycle joins, scoped-cleanup precision, oversize gap
+
+This round supersedes the ONCE-based temporal joins above with a SINCE lifecycle
+model, narrows the join's dangerous-write set, and closes a classifier
+input-budget gap. The default and frozen thesis packs remain unchanged; the
+candidate stays opt-in. No paid classifier or agent run was made.
+
+### SINCE lifecycle instead of a fixed 24-hour ONCE
+
+`dangerous_script_then_schedule` and `schedule_then_dangerous_script` now use
+`(NOT cleared) SINCE [0, 86400] anchor` rather than `ONCE [0, 86400]`. A dangerous
+write to a namespace+path stays live only until a benign overwrite or a delete of
+the same namespace+path (`rewrite_or_delete_target_v2`); a schedule reference
+stays live until an explicit native removal (`schedule_removed_target_v2`). A
+write is classified as exactly one of dangerous or clearing, so the file's latest
+write decides its state. The metric bound is retained as a cap, so stale evidence
+is cleared by lifecycle events and, failing that, by the 24-hour window. This is
+the standard revoke/consent MFOTL idiom. It still tracks proposals, not verified
+bytes: a monitor restart loses history, and the large-clock-advance timeout
+below remains a release blocker. The claim of exactly one retained entry per path
+is still not established for this monitor.
+
+### Scoped cleanup is no longer dangerous for the join
+
+The join now uses a stricter dangerous-write test than the write boundary: a
+scope-limited recursive delete confined to tmp/cache/build is routine maintenance
+and does not count, while an unscoped recursive delete, a reverse shell, a remote
+payload, an authored exfiltration dataflow, or an authored secret-read-and-send
+still count. This removes the benign-maintenance false positives (for example a
+scheduled cache-cleanup script) that the earlier branch reintroduced.
+
+### Schedule parsing over-approximates safely
+
+Every absolute path a scheduled command references is now a candidate target,
+which is safe because the join only Blocks a path that independently carried an
+uncleared dangerous write. A launcher given by absolute path (for example
+`/usr/bin/python3`, `nice`, `flock`) no longer shadows the script it runs, and
+redirections, command lists, `sh -c` wrappers, systemd exec prefixes and
+`ExecReload/Stop`, and cron lines no longer hide the target. A dynamic command
+(shell expansion, backticks) and a relative script with no resolvable working
+directory both yield `schedule_target_unresolved`, which routes to approval, never
+a silent miss. The system-crontab user column is stripped only for
+`/etc/crontab` and `/etc/cron.d/*`, where it exists, rather than by a heuristic
+that previously mistook a leading `cd` for a user name.
+
+### Classifier input-budget gap closed and oversize review widened
+
+The oversized-content status now surfaces as `input_budget_exceeded` even when the
+result text alone fits the cap but the text plus the system prompt exceeds it; the
+broad-content path previously degraded that case to `no_match`. The oversize
+review clause moved from `persistence_v1` to `provenance_v1` and now also covers
+the execution and credential-access action classes, so disabling persistence no
+longer disables oversize review.
+
+### Validation
+
+Full Python suite 3454 passed, 74 skipped (the skips are the real-monitor cases,
+which require the EnfGuard binary). The SINCE formulas were additionally validated
+against a locally built EnfGuard binary for typing and enforcement: write-then-
+schedule Blocks, a benign overwrite or delete clears it, a different namespace does
+not match, and a reference just inside the 24-hour window Blocks while one beyond
+it does not. The large-clock-advance cost remains to be characterised against
+window size before this profile ships for long-lived deployments.

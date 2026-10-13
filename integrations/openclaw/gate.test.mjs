@@ -135,3 +135,15 @@ test('after hook distinguishes reported process completion from a returned callb
     assert.equal(payloads.at(-1).tool_execution.outcome, expected);
   }
 });
+
+test('runtime namespace comes from operator config, not tool arguments', async (t) => {
+  const payloads = [];
+  t.mock.method(globalThis, 'fetch', async (_, options) => {
+    payloads.push(JSON.parse(options.body));
+    return { ok: true, status: 200, json: async () => ({ decision: 'allow', tid: 42 }) };
+  });
+  await register({ runtimeNamespace: 'container-A' }).before_tool_call({
+    ...event, params: { command: 'echo hello', runtime_namespace: 'spoofed-B' }
+  });
+  assert.equal(payloads[0].runtime_namespace, 'container-A');
+});

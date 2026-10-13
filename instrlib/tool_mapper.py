@@ -5053,6 +5053,12 @@ def broad_content_labels_with_status(
     here avoids spending a model call on labels that the trust gate would reject.
     """
     text = strip_enfguard_annotations(text)
+    if untrusted:
+        from instrlib.evidence_budget import check_evidence_budget, EvidenceBudgetExceeded
+        try:
+            check_evidence_budget(text)
+        except EvidenceBudgetExceeded:
+            return (), "input_budget_exceeded"
     if not untrusted:
         return (), None
     fn = _BROAD_CONTENT_JUDGE
@@ -5064,7 +5070,7 @@ def broad_content_labels_with_status(
         return (), "failed_open"
     if (isinstance(result, (tuple, list)) and len(result) == 2
             and isinstance(result[1], str)
-            and result[1] in {"classified", "no_match", "failed_open"}):
+            and result[1] in {"classified", "no_match", "failed_open", "input_budget_exceeded"}):
         raw_labels, status = result
     elif isinstance(result, str) and result in _BROAD_CONTENT_LABELS:
         raw_labels, status = result, "classified"
@@ -5098,6 +5104,16 @@ def broad_content_label_with_status(text: str, untrusted: bool):
     return (labels[0] if labels else None), status
 
 
+def _oversize_content_events(events, tid, call_id, text):
+    from instrlib.evidence_budget import check_evidence_budget, EvidenceBudgetExceeded
+    try:
+        check_evidence_budget(text)
+    except EvidenceBudgetExceeded:
+        _emit_judge_telemetry(events, tid, call_id, "content_semantics", "input_budget_exceeded")
+        return True
+    return False
+
+
 def append_broad_content_events(
     events: List[Event],
     tid: int,
@@ -5112,6 +5128,8 @@ def append_broad_content_events(
     ``content_risk`` fact for this result (``already_flagged``), so there is no
     double judging.
     """
+    if untrusted and _oversize_content_events(events, tid, call_id, text):
+        return
     if already_flagged or _BROAD_CONTENT_JUDGE is None:
         return
     with judge_capture.capturing(tid):
@@ -5144,6 +5162,7 @@ def append_tool_result_content_risk_events(
     if not text.strip():
         return
 
+    oversize = untrusted and _oversize_content_events(events, tid, call_id, text)
     emitted: set[str] = set()
 
     def add_content_risk(level: Optional[str]) -> None:
@@ -5170,6 +5189,9 @@ def append_tool_result_content_risk_events(
         add_content_risk("instruction_like")
     if is_persistence_instruction(text):
         add_content_risk("persistence_instruction")
+
+    if oversize:
+        return
 
     weak_secret_gap = (
         "secret_material" not in emitted
@@ -6314,7 +6336,7 @@ _AUTHORED_CRONTAB_CLEAR_RE = re.compile(
 )
 
 
-def _dangerous_written_content(content: str) -> bool:
+def _dangerous_written_content(content: str, *, scoped_delete_is_dangerous: bool = True) -> bool:
     """True when a locally written script body contains a dangerous action."""
     if not content:
         return False
@@ -6330,7 +6352,7 @@ def _dangerous_written_content(content: str) -> bool:
         # Authored ``rm -rf`` taints even when executing the same wipe would
         # be scratch command_risk=safe. Writing a recursive-delete script is
         # still a dangerous local artifact.
-        or _CRITICAL_BASH_PATTERNS[0].search(cand)
+        or (scoped_delete_is_dangerous and _CRITICAL_BASH_PATTERNS[0].search(cand))
         or _CRITICAL_BASH_PATTERNS[1].search(cand)
         # A DETACHED-LAUNCH shape (``nohup app.py &``, ``setsid``, ``--daemon``)
         # is a launch, not proof of a malicious payload: classify_execution_kind

@@ -488,6 +488,8 @@ def _check_confinement_config() -> None:
 
 
 async def lifespan(app: FastAPI):
+    from instrlib.evidence_budget import validate_evidence_budget
+    validate_evidence_budget()
     ensure_runtime_dirs(state.config)
     _ensure_admin_token_policy(state.config)
     # Drop any session-scoped live overlays from the previous proxy run
@@ -1157,6 +1159,9 @@ async def tool_execute(request: Request) -> JSONResponse:
             canonical_tool = str(event.args[2])
             input_preview = str(event.args[3])
             break
+    from instrlib.persistence_paths import persistence_path_events
+    mapped_tool_events.extend(persistence_path_events(
+        tid, call_id, canonical_tool, tool_input, body.get("runtime_namespace"), mapped_tool_events))
     # The direct agent hook may use a different session id from the proxied LLM
     # response (NanoClaw's chat request can be sessionless while tool hooks use
     # the WhatsApp jid). Persist the canonical proposing tool at the authoritative

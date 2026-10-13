@@ -36,6 +36,10 @@
       },
       "verdictsPath": {
         "type": "string"
+      },
+      "runtimeNamespace": {
+        "type": "string",
+        "description": "Stable operator-assigned filesystem namespace. Must differ across isolated runtimes; never derive from model arguments."
       }
     }
   }

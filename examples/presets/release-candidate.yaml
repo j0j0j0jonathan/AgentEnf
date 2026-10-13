@@ -843,6 +843,35 @@ policies:
        AND Classify(t, c, "untrusted_write_path", path))
       IMPLIES:R Block(t, "tool", "dangerous_service_schedule", "persistence write contains a dangerous executable payload"))
     }
+
+    AND
+    {"dangerous_script_then_schedule"}{
+    ALWAYS (FORALL t, c, tool, input, target.
+      (PolicyActive(t, "persistence_v1")
+       AND ToolPlanned(t, c, tool, input)
+       AND Classify(t, c, "schedule_target_v2", target)
+       AND ((NOT (EXISTS tc, cc. Classify(tc, cc, "rewrite_or_delete_target_v2", target)))
+            SINCE [0, 86400] (EXISTS td, dc. Classify(td, dc, "dangerous_write_target_v2", target))))
+      IMPLIES:R Block(t, "tool", "dangerous_script_then_schedule", "schedule references a path whose dangerous write proposal in this runtime namespace has not since been overwritten or deleted"))
+    }
+    AND
+    {"schedule_then_dangerous_script"}{
+    ALWAYS (FORALL t, c, tool, input, target.
+      (PolicyActive(t, "persistence_v1")
+       AND ToolPlanned(t, c, tool, input)
+       AND Classify(t, c, "dangerous_write_target_v2", target)
+       AND ((NOT (EXISTS tr, cr. Classify(tr, cr, "schedule_removed_target_v2", target)))
+            SINCE [0, 86400] (EXISTS ts, cs. Classify(ts, cs, "schedule_target_v2", target))))
+      IMPLIES:R Block(t, "tool", "schedule_then_dangerous_script", "dangerous write targets a path with a schedule reference in this runtime namespace that has not since been removed"))
+    }
+    AND
+    {"unresolved_schedule_review"}{
+    ALWAYS (FORALL t, c, tool, input, reason.
+      (PolicyActive(t, "persistence_v1")
+       AND ToolPlanned(t, c, tool, input)
+       AND Classify(t, c, "schedule_target_unresolved", reason))
+      IMPLIES:R Approve(t, "tool", "unresolved_schedule_target"))
+    }
 - id: privilege_escalation_v1
   enabled: true
   mfotl: |
@@ -1739,6 +1768,23 @@ policies:
             AND Untrusted(t2, "tool_result")
             AND Classify(t2, c2, "content_risk", "instruction_like")))
       IMPLIES:R Block(t, "tool", "openclaw_private_control_read", "read of OpenClaw's reserved private control files after untrusted instruction-like content"))
+    }
+
+    AND
+    {"oversized_untrusted_result_review"}{
+    ALWAYS (FORALL t, r, s, c, tool, input.
+      (PolicyActive(t, "provenance_v1")
+       AND Turn(t, r, s) AND ToolPlanned(t, c, tool, input)
+       AND (Classify(t, c, "action_class", "privilege_escalation")
+            OR Classify(t, c, "action_class", "exfiltration")
+            OR Classify(t, c, "action_class", "persistence")
+            OR Classify(t, c, "action_class", "execution")
+            OR Classify(t, c, "action_class", "credential_access"))
+       AND ONCE [0, 86400] (EXISTS t1, r1, c1.
+         Turn(t1, r1, s) AND Untrusted(t1, "tool_result")
+         AND Classify(t1, c1, "judge_adapter", "content_semantics")
+         AND Classify(t1, c1, "judge_status", "input_budget_exceeded")))
+      IMPLIES:R Approve(t, "tool", "oversized_untrusted_result_review"))
     }
 - id: critical_safety_net_v1
   enabled: true

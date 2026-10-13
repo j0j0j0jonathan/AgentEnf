@@ -17,3 +17,4 @@ state/
 logs/
 *.log
 .DS_Store
+.impeccable/

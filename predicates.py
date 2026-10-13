@@ -1305,6 +1305,9 @@ def _call_judge_api(
 ) -> str:
     """Single-task judge HTTP call dispatched by ``backend``."""
 
+    from instrlib.evidence_budget import check_evidence_budget
+    check_evidence_budget(system_prompt, content, repair_hint)
+
     if backend == "openai_decisions":
         from instrlib import decisions
         with _MODEL_SLOTS:
@@ -1397,6 +1400,10 @@ def _call_batch_judge_api(
     timeout_ms: int,
 ) -> str:
     """Multi-task judge HTTP call sharing one upstream backend."""
+
+    from instrlib.evidence_budget import check_evidence_budget
+    for task in tasks:
+        check_evidence_budget(task.system_prompt, task.content)
 
     if backend == "openai_decisions":
         from instrlib import decisions
@@ -1492,6 +1499,9 @@ def _dispatch_judge(
     json_response: bool,
 ) -> str:
     """Make one HTTP request to whichever judge backend was selected."""
+
+    from instrlib.evidence_budget import check_evidence_budget
+    check_evidence_budget(system_prompt, user_msg)
 
     if backend == "ollama":
         return _call_ollama_judge(system_prompt, user_msg, model, timeout_s, max_output_tokens)

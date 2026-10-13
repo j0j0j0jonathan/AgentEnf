@@ -50,6 +50,8 @@ def validate(data, questions):
 
 def ask(content, questions, timeout, *, model=DEFAULT_MODEL, tool=False):
     global _client
+    from instrlib.evidence_budget import check_evidence_budget
+    check_evidence_budget(content, json.dumps(questions, ensure_ascii=False))
     key_name = "ENFGUARD_TOOL_JUDGE_OPENAI_API_KEY" if tool else "JUDGE_OPENAI_API_KEY"
     key = (os.environ.get(key_name) or os.environ.get("OPENAI_API_KEY") or "").strip()
     if not key:

@@ -168,6 +168,7 @@ function gateConfig(pluginConfig, event) {
     blockApprovals: config.blockApprovals === true,
     verdictsPath: String(config.verdictsPath || DEFAULT_VERDICTS_PATH),
     workspaceRoots: configuredWorkspaceRoots(config.workspaceRoots),
+    runtimeNamespace: String(config.runtimeNamespace || process.env.ENFGUARD_RUNTIME_NAMESPACE || ""),
   };
 }
 
@@ -269,6 +270,7 @@ export const pluginDefinition = {
   register(api) {
     const registeredPluginConfig = api?.pluginConfig;
     const initial = gateConfig(registeredPluginConfig, {});
+    if (initial && !initial.runtimeNamespace) console.warn("AgentEnf: runtimeNamespace is missing; schedule targets require review and cross-call path joins are unavailable.");
     if (initial && !initial.adminToken) throw new Error("Set ENFGUARD_ADMIN_TOKEN or plugin adminToken");
     if (initial && !["block", "allow"].includes(initial.failMode)) {
       throw new Error("AgentEnf failMode must be block or allow");
@@ -315,6 +317,7 @@ export const pluginDefinition = {
               tool_name: mapped.tool,
               tool_input: mapped.input,
               workspace_roots: cfg.workspaceRoots,
+              runtime_namespace: cfg.runtimeNamespace,
               decision_schema_version: 1,
             },
             120000
@@ -449,6 +452,7 @@ export const pluginDefinition = {
               tool_response,
               exit_code: resultExitCode(event),
               workspace_roots: cfg.workspaceRoots,
+              runtime_namespace: cfg.runtimeNamespace,
               decision_schema_version: 1,
               tool_execution: toolExecution,
               result_payload_scope: "model_visible_content",

@@ -37,8 +37,10 @@ def classify_configuration_with_status(content):
         label = obj.get('label') if isinstance(obj,dict) else None
         if label in LABELS:
             return label, 'classified'
-    except Exception:
-        pass
+    except Exception as exc:
+        from instrlib.evidence_budget import EvidenceBudgetExceeded
+        if isinstance(exc, EvidenceBudgetExceeded):
+            return None, 'input_budget_exceeded'
     return None, 'unavailable'
 
 
@@ -57,7 +59,8 @@ def configuration_events(tid, call_id, canonical_tool, tool_input):
         except Exception:
             pass
     if status != 'classified' or label not in LABELS:
-        label, status = 'uncertain', 'unavailable'
+        label = 'uncertain'
+        status = 'input_budget_exceeded' if status == 'input_budget_exceeded' else 'unavailable'
     events += [Event('Classify',tid,call_id,'configuration_change',label),
                Event('Classify',tid,call_id,'configuration_review_status',status)]
     return events

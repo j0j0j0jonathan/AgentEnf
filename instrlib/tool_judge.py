@@ -826,7 +826,10 @@ def classify_broad_content_with_status(
             return (), "failed_open"
         labels = tuple(dict.fromkeys(normalized))
         return (labels, "classified") if labels else ((), "no_match")
-    except Exception:
+    except Exception as exc:
+        from instrlib.evidence_budget import EvidenceBudgetExceeded
+        if isinstance(exc, EvidenceBudgetExceeded):
+            return (), "input_budget_exceeded"
         return (), "failed_open"
 
 
@@ -1265,6 +1268,8 @@ def _dispatch(adapter: str, user_msg: str, timeout_s: float, system: str) -> str
     reply = ""
     err: Optional[str] = None
     try:
+        from instrlib.evidence_budget import check_evidence_budget
+        check_evidence_budget(system, user_msg)
         if backend == "openai_decisions":
             from instrlib import decisions
             reply = decisions.tool_call(adapter, user_msg, timeout_s, system,
