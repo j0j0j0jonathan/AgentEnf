@@ -1,11 +1,30 @@
-import { useEffect, useMemo, useState } from "react";
-import { getTrace, listTraces } from "../api.js";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { describeRequestError, getTrace, listTraces } from "../api.js";
+import { fixtureKind, fixtureList, fixtureMode, fixtureTrace } from "../fixtures.js";
 import { POLICY_META } from "../policyMeta.js";
-import { verdictKind, verdictLabel } from "../traceUtils.js";
-import { EnforcementModeControl, SwitchMini, ToggleControl } from "./ui.jsx";
-import { TraceDetail } from "./TraceDetail.jsx";
+import { enforcerEventLog, eventsInOrder, formatClock, groupSessions, sessionIdOf, verdictKind } from "../traceUtils.js";
+import { EnforcementModeControl, FixtureNotice, SwitchMini, ToggleControl } from "./ui.jsx";
+import { TraceWorkspace } from "./TraceWorkspace.jsx";
+
+function loadTraceList() {
+  const kind = fixtureKind();
+  if (kind === "error") return Promise.reject(new TypeError("Failed to fetch"));
+  if (kind === "empty") return Promise.resolve({ traces: [] });
+  if (kind === "1") return Promise.resolve(fixtureList());
+  return listTraces(40);
+}
+
+function loadTraceDetail(tid) {
+  if (fixtureMode()) return Promise.resolve(fixtureTrace(tid));
+  return getTrace(tid);
+}
+
+function describeError(err, fallback) {
+  return describeRequestError(err, fallback);
+}
 
 const LIVE_POLL_MS = 2000;
+const NO_TURNS = [];
 
 function LiveConsole({
   policyState,
@@ -20,11 +39,12 @@ function LiveConsole({
   onOpenSwitches,
 }) {
   const [traceList, setTraceList] = useState([]);
-  const [activeTid, setActiveTid] = useState(null);
+  const presetTurn = Number(new URLSearchParams(window.location.search).get("turn")) || null;
+  const [activeTid, setActiveTid] = useState(presetTurn);
   const [activeTrace, setActiveTrace] = useState(null);
   const [live, setLive] = useState(true);
   const [redact, setRedact] = useState(false);
-  const [follow, setFollow] = useState(true); // follow newest turn automatically
+  const [follow, setFollow] = useState(presetTurn == null);
   const [error, setError] = useState("");
   const [busyPolicy, setBusyPolicy] = useState("");
   // Operator filters: narrow the live stream to one verdict kind, and the
@@ -38,6 +58,12 @@ function LiveConsole({
   // Newest tid the operator has "caught up" to. Frozen while follow is off so
   // we can count how many turns arrived since they stopped following.
   const [seenTopTid, setSeenTopTid] = useState(null);
+  const [sessionKey, setSessionKey] = useState("");
+  const [detailCache, setDetailCache] = useState({});
+  const [loadingList, setLoadingList] = useState(true);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [reloadTick, setReloadTick] = useState(0);
+  const loadedTids = useRef(new Set());
 
   // Poll the trace list. When following, keep the newest turn selected so the
   // console shows the run as it happens.
@@ -45,35 +71,51 @@ function LiveConsole({
     let cancelled = false;
     async function tick() {
       try {
-        const result = await listTraces(40);
+        const result = await loadTraceList();
         if (cancelled) return;
         const list = Array.isArray(result.traces) ? result.traces : [];
         setTraceList(list);
         setError("");
         if (follow && list.length) {
           setActiveTid((current) => (current === list[0].tid ? current : list[0].tid));
+          const key = sessionIdOf(list[0]) || "__unscoped__";
+          setSessionKey(key);
+        } else if (list.length) {
+          setActiveTid((current) => current ?? list[0].tid);
+          setSessionKey((current) => {
+            if (current) return current;
+            const chosen = list.find((item) => item.tid === (presetTurn || list[0].tid)) || list[0];
+            return sessionIdOf(chosen) || "__unscoped__";
+          });
         }
       } catch (err) {
-        if (!cancelled) setError(err.message || "failed to load traces");
+        if (!cancelled) setError(describeError(err, "Could not load traces."));
+      } finally {
+        if (!cancelled) setLoadingList(false);
       }
     }
     tick();
     if (!live) return () => { cancelled = true; };
     const handle = window.setInterval(tick, LIVE_POLL_MS);
     return () => { cancelled = true; window.clearInterval(handle); };
-  }, [live, follow]);
+  }, [live, follow, reloadTick]);
 
   // Load the selected turn's detail. Re-fetches when the list updates so a
   // followed newest turn refreshes its verdict in place.
   useEffect(() => {
     if (activeTid == null) { setActiveTrace(null); return undefined; }
     let cancelled = false;
+    setDetailLoading(true);
     (async () => {
       try {
-        const result = await getTrace(activeTid);
-        if (!cancelled) setActiveTrace(result);
+        const result = await loadTraceDetail(activeTid);
+        if (cancelled) return;
+        setActiveTrace(result);
+        if (result) setDetailCache((current) => ({ ...current, [activeTid]: result }));
       } catch (err) {
-        if (!cancelled) setError(err.message || "failed to load trace");
+        if (!cancelled) setError(describeError(err, "Could not load this turn."));
+      } finally {
+        if (!cancelled) setDetailLoading(false);
       }
     })();
     return () => { cancelled = true; };
@@ -82,6 +124,14 @@ function LiveConsole({
   function selectTrace(tid) {
     setFollow(false);
     setActiveTid(tid);
+  }
+
+  function selectSession(key) {
+    setFollow(false);
+    setSessionKey(key);
+    const group = groupSessions(traceList).find((item) => item.key === key);
+    const latest = group?.turns.at(-1);
+    if (latest) setActiveTid(latest.tid);
   }
 
   const firedInActive = useMemo(() => {
@@ -116,7 +166,7 @@ function LiveConsole({
   // Verdict tally across the recent turns, for the stream-head counters and to
   // disable a filter chip that would match nothing.
   const verdictCounts = useMemo(() => {
-    const acc = { block: 0, warn: 0, allow: 0 };
+    const acc = { block: 0, warn: 0, approval: 0, allow: 0 };
     for (const entry of traceList) {
       const kind = verdictKind(entry.action);
       acc[kind] = (acc[kind] || 0) + 1;
@@ -131,6 +181,46 @@ function LiveConsole({
         : traceList.filter((entry) => verdictKind(entry.action) === verdictFilter),
     [traceList, verdictFilter],
   );
+
+  const sessions = useMemo(() => groupSessions(visibleTraces), [visibleTraces]);
+  const activeSession = sessions.find((item) => item.key === sessionKey) || sessions[0];
+  const sessionTurns = activeSession?.turns || NO_TURNS;
+
+  const earlier = useMemo(() => {
+    const index = sessionTurns.findIndex((turn) => turn.tid === activeTid);
+    if (index <= 0) return [];
+    return sessionTurns.slice(0, index).map((turn) => {
+      const detail = detailCache[turn.tid];
+      return {
+        tid: turn.tid,
+        action: turn.action,
+        toolName: turn.tool_name || "",
+        time: formatClock(turn.ts),
+        log: detail ? enforcerEventLog(detail) : [],
+        steps: detail ? eventsInOrder(detail) : [],
+      };
+    });
+  }, [sessionTurns, activeTid, detailCache]);
+
+  useEffect(() => {
+    if (!sessionTurns.length) return undefined;
+    let cancelled = false;
+    for (const turn of sessionTurns) {
+      const stamp = `${turn.tid}:${turn.ts}`;
+      if (loadedTids.current.has(stamp)) continue;
+      loadedTids.current.add(stamp);
+      loadTraceDetail(turn.tid)
+        .then((result) => {
+          if (!cancelled && result) {
+            setDetailCache((current) => ({ ...current, [turn.tid]: result }));
+          }
+        })
+        .catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionTurns]);
 
   const visiblePolicyIds = useMemo(() => {
     const query = policyQuery.trim().toLowerCase();
@@ -156,6 +246,7 @@ function LiveConsole({
   function jumpToLatest() {
     if (traceList.length) {
       setActiveTid(traceList[0].tid);
+      setSessionKey(sessionIdOf(traceList[0]) || "__unscoped__");
       setSeenTopTid(traceList[0].tid);
     }
     setFollow(true);
@@ -173,17 +264,17 @@ function LiveConsole({
       if (target && target.isContentEditable) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        if (!visibleTraces.length) return;
+        if (!sessionTurns.length) return;
         event.preventDefault();
         setFollow(false);
         setActiveTid((current) => {
-          const idx = visibleTraces.findIndex((entry) => entry.tid === current);
-          if (idx === -1) return visibleTraces[0].tid;
+          const idx = sessionTurns.findIndex((entry) => entry.tid === current);
+          if (idx === -1) return sessionTurns[0].tid;
           const nextIdx =
             event.key === "ArrowDown"
-              ? Math.min(visibleTraces.length - 1, idx + 1)
+              ? Math.min(sessionTurns.length - 1, idx + 1)
               : Math.max(0, idx - 1);
-          return visibleTraces[nextIdx].tid;
+          return sessionTurns[nextIdx].tid;
         });
       } else if (event.key === "p" || event.key === "P") {
         event.preventDefault();
@@ -192,14 +283,14 @@ function LiveConsole({
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [visibleTraces]);
+  }, [sessionTurns]);
 
   async function flipPolicy(id, enabled) {
     setBusyPolicy(id);
     try {
       await onTogglePolicy(id, enabled);
     } catch (err) {
-      setStatus?.({ kind: "error", text: err.message });
+      setStatus?.({ kind: "error", text: describeRequestError(err) });
     } finally {
       setBusyPolicy("");
     }
@@ -210,12 +301,13 @@ function LiveConsole({
       const result = await onUpdateSwitch(id, value);
       setStatus?.({ kind: "ok", text: `${id} = ${result.value}` });
     } catch (err) {
-      setStatus?.({ kind: "error", text: err.message });
+      setStatus?.({ kind: "error", text: describeRequestError(err) });
     }
   }
 
   return (
     <section className={`console density-${density}`}>
+      <FixtureNotice />
       <div className="console-bar">
         <button
           type="button"
@@ -248,14 +340,14 @@ function LiveConsole({
         </button>
         <button
           type="button"
-          className={`chip-btn${density === "compact" ? " on" : ""}`}
+          className={`chip-btn secondary-control${density === "compact" ? " on" : ""}`}
           onClick={() => setDensity((value) => (value === "compact" ? "comfortable" : "compact"))}
           title="Toggle compact density for the rail and stream"
           aria-pressed={density === "compact"}
         >
           {density === "compact" ? "Compact" : "Comfortable"}
         </button>
-        <button type="button" className="chip-btn" onClick={onReload} title="Reload policies from YAML">
+        <button type="button" className="chip-btn secondary-control" onClick={onReload} title="Reload policies from YAML">
           Reload YAML
         </button>
       </div>
@@ -300,7 +392,13 @@ function LiveConsole({
                   </div>
                 );
               })}
-              {!policyIds.length ? <p className="muted small">No policies loaded.</p> : null}
+              {!policyIds.length ? (
+                <p className="muted small">
+                  {fixtureMode()
+                    ? "Policy toggles appear when the live proxy is connected."
+                    : "No policies loaded."}
+                </p>
+              ) : null}
               {policyIds.length && !visiblePolicyIds.length ? (
                 <p className="muted small">No policies match “{policyQuery}”.</p>
               ) : null}
@@ -310,7 +408,7 @@ function LiveConsole({
             </button>
           </div>
 
-          <div className="rail-section">
+          <div className="rail-section switches-section">
             <div className="rail-head">
               <span>Switches</span>
               <span className="rail-count">{railSwitches.length}</span>
@@ -329,14 +427,15 @@ function LiveConsole({
           </div>
         </aside>
 
-        <div className="console-stream">
-          <div className="stream-head">
-            <span>Live trace</span>
-            <div className="stream-filters" role="group" aria-label="Filter live trace by verdict">
+        <div className="console-main">
+          <div className="stream-head secondary-control">
+            <span>Filter</span>
+            <div className="stream-filters" role="group" aria-label="Filter turns by verdict">
               {[
                 ["all", "all", traceList.length],
                 ["block", "block", verdictCounts.block],
                 ["warn", "warn", verdictCounts.warn],
+                ["approval", "approval", verdictCounts.approval],
                 ["allow", "allow", verdictCounts.allow],
               ].map(([key, label, count]) => (
                 <button
@@ -363,62 +462,23 @@ function LiveConsole({
               ↓ {newCount} new turn{newCount === 1 ? "" : "s"}
             </button>
           ) : null}
-          {error ? <div className="banner error">{error}</div> : null}
-          <div className="stream-list">
-            {visibleTraces.map((entry) => {
-              const fired = Array.isArray(entry.fired_predicates) ? entry.fired_predicates : [];
-              const kind = verdictKind(entry.action);
-              const firedText = fired.length
-                ? fired.slice(0, 3).join(", ") + (fired.length > 3 ? ` +${fired.length - 3}` : "")
-                : "";
-              // For block/warn turns the firing policies are the reason, so we
-              // label them; allow turns keep the muted predicate list.
-              let reason = "no policy fired";
-              if (firedText && (kind === "block" || kind === "warn")) {
-                reason = `${kind === "block" ? "blocked by" : "warned by"}: ${firedText}`;
-              } else if (firedText) {
-                reason = firedText;
-              }
-              return (
-                <button
-                  key={`${entry.tid}:${entry.ts}`}
-                  type="button"
-                  className={`stream-row${activeTid === entry.tid ? " active" : ""} v-${kind}`}
-                  onClick={() => selectTrace(entry.tid)}
-                >
-                  <span className={`verdict-pill ${kind}`}>{verdictLabel(entry.action)}</span>
-                  <span className="stream-tid">T{entry.tid}</span>
-                  <span className={kind === "allow" ? "stream-fired muted" : `stream-fired reason-${kind}`}>
-                    {reason}
-                  </span>
-                  <span className="stream-ms muted">{entry.wall_ms || 0}ms</span>
-                </button>
-              );
-            })}
-            {!traceList.length ? (
-              <p className="muted small stream-empty">
-                Waiting for the first turn. Run an agent or send a request through the proxy and verdicts appear here live.
-              </p>
-            ) : null}
-            {traceList.length && !visibleTraces.length ? (
-              <p className="muted small stream-empty">
-                No {verdictFilter} turns in the recent window.{" "}
-                <button type="button" className="link-button" onClick={() => setVerdictFilter("all")}>
-                  Show all
-                </button>
-              </p>
-            ) : null}
-          </div>
-        </div>
-
-        <div className="console-detail">
-          {activeTrace ? (
-            <TraceDetail trace={activeTrace} redact={redact} />
-          ) : (
-            <div className="detail-empty muted">
-              {traceList.length ? "Select a turn to inspect its verdict and the events that fired." : "No turn selected yet."}
-            </div>
-          )}
+          <TraceWorkspace
+            traces={visibleTraces}
+            activeTid={activeTid}
+            activeTrace={activeTrace}
+            sessionKey={activeSession?.key || ""}
+            onSelectSession={selectSession}
+            onSelectTurn={selectTrace}
+            earlier={earlier}
+            redact={redact}
+            loading={loadingList}
+            error={error}
+            onRetry={() => {
+              setLoadingList(true);
+              setReloadTick((value) => value + 1);
+            }}
+            detailLoading={detailLoading}
+          />
         </div>
       </div>
     </section>

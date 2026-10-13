@@ -11,6 +11,7 @@ export default defineConfig({
       "/feedback": "http://127.0.0.1:9000",
       "/switches": "http://127.0.0.1:9000",
       "/pending_approvals": "http://127.0.0.1:9000",
+      "/health": "http://127.0.0.1:9000",
       "/v1": "http://127.0.0.1:9000",
       "/chat": "http://127.0.0.1:9000",
     },

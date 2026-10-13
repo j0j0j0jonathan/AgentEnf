@@ -77,3 +77,24 @@ test('large repeated results deduplicate without confusing a changed suffix', as
   assert.equal(payloads[1].result_duplicate, true);
   assert.equal(payloads[2].result_duplicate, false);
 });
+
+test('policy blocks carry structured attribution and rule identifiers', async (t) => {
+  t.mock.method(globalThis, 'fetch', async () => ({ok: true, status: 200,
+    json: async () => ({decision: 'block', reason: 'credential read denied', tid: 42,
+      decision_trace: {policy_decision: 'block', policy_verdicts: [
+        {action: 'BlockToolCall', category: 'credential_read_for_requested_disclosure'}]}})}));
+  const result = await register().before_tool_call(event, {sessionKey: 'demo'});
+  assert.equal(result.block, true);
+  const record = JSON.parse(result.blockReason.split('[EnfAgent enforcement] ')[1]);
+  assert.equal(record.kind, 'policy_block');
+  assert.deepEqual(record.rules, ['credential_read_for_requested_disclosure']);
+  assert.equal(record.timepoint, 42);
+});
+
+test('connection failure is distinguished from a policy block', async (t) => {
+  t.mock.method(globalThis, 'fetch', async () => {throw new Error('offline');});
+  const result = await register().before_tool_call(event);
+  const record = JSON.parse(result.blockReason.split('[EnfAgent enforcement] ')[1]);
+  assert.equal(record.kind, 'service_failure');
+  assert.deepEqual(record.rules, []);
+});

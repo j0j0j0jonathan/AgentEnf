@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   deleteLivePolicy,
+  describeRequestError,
   getPolicies,
   getSwitches,
   getTokenTotal,
@@ -11,6 +12,7 @@ import {
   setSwitch,
   upsertLivePolicy,
 } from "./api.js";
+import { fixtureMode } from "./fixtures.js";
 import {
   EnforcementModeControl,
   Metric,
@@ -63,6 +65,12 @@ function App() {
   // the Switches tab both read and write this list, so changes from either
   // surface instantly in the other.
   const [switches, setSwitches] = useState([]);
+  const [presentation, setPresentation] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("present") === "1") return true;
+    return window.sessionStorage.getItem("agentenf_presentation") === "1";
+  });
+  const [reachable, setReachable] = useState(true);
 
   async function refreshPolicies() {
     const next = await getPolicies();
@@ -77,7 +85,7 @@ function App() {
       const result = await getSwitches();
       setSwitches(Array.isArray(result.switches) ? result.switches : []);
     } catch (error) {
-      setStatus({ kind: "error", text: error.message });
+      if (!fixtureMode()) setStatus({ kind: "error", text: describeRequestError(error) });
     }
   }, []);
 
@@ -94,10 +102,44 @@ function App() {
 
   useEffect(() => {
     refreshPolicies()
-      .catch((error) => setStatus({ kind: "error", text: error.message }))
+      .catch((error) => {
+        if (!fixtureMode()) setStatus({ kind: "error", text: describeRequestError(error) });
+      })
       .finally(() => setLoading(false));
-    refreshSwitches();
+    if (!fixtureMode()) refreshSwitches();
   }, [refreshSwitches]);
+
+  useEffect(() => {
+    if (fixtureMode()) {
+      setReachable(true);
+      return undefined;
+    }
+    let cancelled = false;
+    async function ping() {
+      try {
+        const response = await fetch("/health", { cache: "no-store" });
+        const payload = await response.json().catch(() => null);
+        const live = response.ok && payload && typeof payload.ok === "boolean";
+        if (!cancelled) setReachable(live);
+      } catch {
+        if (!cancelled) setReachable(false);
+      }
+    }
+    ping();
+    const handle = window.setInterval(ping, 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(handle);
+    };
+  }, []);
+
+  function togglePresentation() {
+    setPresentation((current) => {
+      const next = !current;
+      window.sessionStorage.setItem("agentenf_presentation", next ? "1" : "0");
+      return next;
+    });
+  }
 
   useEffect(() => {
     if (!sid) return undefined;
@@ -133,7 +175,7 @@ function App() {
       setStatus({ kind: "ok", text: "Policy state saved" });
       return merged;
     } catch (error) {
-      setStatus({ kind: "error", text: error.message });
+      setStatus({ kind: "error", text: describeRequestError(error) });
       throw error;
     }
   }
@@ -162,7 +204,7 @@ function App() {
       await refreshSwitches();
       setStatus({ kind: "ok", text: "YAML reloaded" });
     } catch (error) {
-      setStatus({ kind: "error", text: error.message });
+      setStatus({ kind: "error", text: describeRequestError(error) });
     }
   }
 
@@ -176,7 +218,7 @@ function App() {
       setStatus({ kind: "ok", text: "Live policy installed and runtime reloaded" });
       return merged;
     } catch (error) {
-      setStatus({ kind: "error", text: error.message });
+      setStatus({ kind: "error", text: describeRequestError(error) });
       throw error;
     }
   }
@@ -191,7 +233,7 @@ function App() {
       setStatus({ kind: "ok", text: `Live policy ${policyId} removed` });
       return merged;
     } catch (error) {
-      setStatus({ kind: "error", text: error.message });
+      setStatus({ kind: "error", text: describeRequestError(error) });
       throw error;
     }
   }
@@ -214,25 +256,38 @@ function App() {
       }
       setStatus({ kind: "ok", text: `Enforcement mode: ${mode}` });
     } catch (error) {
-      setStatus({ kind: "error", text: error.message });
+      setStatus({ kind: "error", text: describeRequestError(error) });
     }
   }
 
   return (
-    <div className="app-shell">
-      <ApprovalsLayer setStatus={setStatus} />
+    <div className={presentation ? "app-shell presentation" : "app-shell"}>
       <header className="topbar">
-        <div>
-          <div className="eyebrow">AgentEnf</div>
-          <h1>Enforcement</h1>
+        <div className="brand">
+          <h1>AgentEnf</h1>
+          <p>Enforcement console</p>
         </div>
         <div className="top-actions">
-          <StatusPill
-            kind={status.kind}
-            text={status.text || (loading ? "Loading" : "Ready")}
-          />
-          <Metric label="tokens" value={tokens} />
+          {!reachable ? (
+            <StatusPill kind="error" text="Not reachable" />
+          ) : (
+            <StatusPill
+              kind={status.kind}
+              text={status.text || (loading ? "Loading" : "Ready")}
+            />
+          )}
+          <span className="secondary-control">
+            <Metric label="tokens" value={tokens} />
+          </span>
           <EnforcementModeControl value={enforcementMode} onChange={changeEnforcementMode} />
+          <button
+            className={presentation ? "chip-btn on" : "chip-btn"}
+            type="button"
+            onClick={togglePresentation}
+            aria-pressed={presentation}
+          >
+            Presentation
+          </button>
         </div>
       </header>
 
@@ -252,6 +307,7 @@ function App() {
       </nav>
 
       <main className="content">
+        <ApprovalsLayer setStatus={setStatus} />
         {tab === "live" ? (
           <LiveConsole
             policyState={policyDraft}

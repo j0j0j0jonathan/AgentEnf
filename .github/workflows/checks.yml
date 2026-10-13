@@ -29,4 +29,4 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm --prefix frontend ci
       - run: npm --prefix frontend run build
-      - run: node --test integrations/nanoclaw/*.test.mjs integrations/openclaw/*.test.mjs
+      - run: node --test integrations/nanoclaw/*.test.mjs integrations/openclaw/*.test.mjs frontend/src/traceUtils.test.mjs

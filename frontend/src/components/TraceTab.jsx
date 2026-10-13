@@ -1,130 +1,142 @@
-import { useCallback, useEffect, useState } from "react";
-import { getTrace, listTraces } from "../api.js";
-import { verdictKind, verdictLabel } from "../traceUtils.js";
-import { TraceDetail } from "./TraceDetail.jsx";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { describeRequestError, getTrace, listTraces } from "../api.js";
+import { fixtureKind, fixtureList, fixtureMode, fixtureTrace } from "../fixtures.js";
+import { enforcerEventLog, eventsInOrder, formatClock, groupSessions, sessionIdOf } from "../traceUtils.js";
+import { FixtureNotice } from "./ui.jsx";
+import { TraceWorkspace } from "./TraceWorkspace.jsx";
+
+function loadTraceList() {
+  const kind = fixtureKind();
+  if (kind === "error") return Promise.reject(new TypeError("Failed to fetch"));
+  if (kind === "empty") return Promise.resolve({ traces: [] });
+  if (kind === "1") return Promise.resolve(fixtureList());
+  return listTraces(50);
+}
+
+function loadTraceDetail(tid) {
+  return fixtureMode() ? Promise.resolve(fixtureTrace(tid)) : getTrace(tid);
+}
 
 function TraceTab() {
   const [traceList, setTraceList] = useState([]);
-  const [activeTid, setActiveTid] = useState(null);
+  const [activeTid, setActiveTid] = useState(
+    () => Number(new URLSearchParams(window.location.search).get("turn")) || null,
+  );
+  const [sessionKey, setSessionKey] = useState("");
   const [activeTrace, setActiveTrace] = useState(null);
+  const [detailCache, setDetailCache] = useState({});
   const [error, setError] = useState("");
   const [redact, setRedact] = useState(true);
-  const [loadingList, setLoadingList] = useState(false);
+  const [loadingList, setLoadingList] = useState(true);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   const refreshList = useCallback(async () => {
     setLoadingList(true);
     try {
-      const result = await listTraces();
-      setTraceList(Array.isArray(result.traces) ? result.traces : []);
+      const result = await loadTraceList();
+      const list = Array.isArray(result.traces) ? result.traces : [];
+      setTraceList(list);
       setError("");
+      if (!sessionKey && list[0]) {
+        const chosen = list.find((item) => item.tid === activeTid) || list[0];
+        setSessionKey(sessionIdOf(chosen) || "__unscoped__");
+        if (activeTid == null) setActiveTid(chosen.tid);
+      }
     } catch (err) {
-      setError(err.message || "failed to load traces");
+      setError(describeRequestError(err, "Could not load traces."));
     } finally {
       setLoadingList(false);
     }
-  }, []);
-
-  const loadTrace = useCallback(async (tid) => {
-    try {
-      setError("");
-      const result = await getTrace(tid);
-      setActiveTid(tid);
-      setActiveTrace(result);
-      window.parent?.postMessage({ kind: "trace_loaded", tid }, "*");
-    } catch (err) {
-      setError(err.message || "failed to load trace");
-    }
-  }, []);
+  }, [sessionKey]);
 
   useEffect(() => {
     refreshList();
   }, [refreshList]);
 
-  // Drop a stale selection: if the currently open turn is no longer in the
-  // list (e.g. it belonged to a previous proxy run), clear the detail pane so
-  // we never show a trace that the refreshed list no longer contains.
-  useEffect(() => {
-    if (activeTid != null && !traceList.some((entry) => entry.tid === activeTid)) {
-      setActiveTid(null);
-      setActiveTrace(null);
-    }
-  }, [traceList, activeTid]);
+  const sessions = useMemo(() => groupSessions(traceList), [traceList]);
+  const activeSession = sessions.find((item) => item.key === sessionKey) || sessions[0];
+  const sessionTurns = activeSession?.turns || [];
 
-  async function loadByInput(event) {
-    event?.preventDefault();
-    const data = new FormData(event.currentTarget);
-    const raw = data.get("tid");
-    const tid = parseInt(raw, 10);
-    if (Number.isFinite(tid)) {
-      await loadTrace(tid);
+  useEffect(() => {
+    if (activeTid == null) return;
+    if (sessionTurns.some((turn) => turn.tid === activeTid)) return;
+    setActiveTid(sessionTurns.at(-1)?.tid ?? null);
+    setActiveTrace(null);
+  }, [activeTid, sessionTurns]);
+
+  useEffect(() => {
+    if (activeTid == null) {
+      setActiveTrace(null);
+      return undefined;
     }
+    let cancelled = false;
+    setDetailLoading(true);
+    loadTraceDetail(activeTid)
+      .then((result) => {
+        if (cancelled) return;
+        setActiveTrace(result);
+        if (result) setDetailCache((current) => ({ ...current, [activeTid]: result }));
+      })
+      .catch((err) => {
+        if (!cancelled) setError(describeRequestError(err, "Could not load this turn."));
+      })
+      .finally(() => {
+        if (!cancelled) setDetailLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTid]);
+
+  const earlier = useMemo(() => {
+    const index = sessionTurns.findIndex((turn) => turn.tid === activeTid);
+    if (index <= 0) return [];
+    return sessionTurns.slice(0, index).map((turn) => ({
+      tid: turn.tid,
+      action: turn.action,
+      toolName: turn.tool_name || "",
+      time: formatClock(turn.ts),
+      log: detailCache[turn.tid] ? enforcerEventLog(detailCache[turn.tid]) : [],
+      steps: detailCache[turn.tid] ? eventsInOrder(detailCache[turn.tid]) : [],
+    }));
+  }, [sessionTurns, activeTid, detailCache]);
+
+  function selectSession(key) {
+    setSessionKey(key);
+    const group = sessions.find((item) => item.key === key);
+    setActiveTid(group?.turns.at(-1)?.tid ?? null);
   }
 
   return (
-    <section className="panel-grid">
-      <form className="toolbar" onSubmit={loadByInput}>
-        <div>
-          <h2>Trace</h2>
-          <p>
-            Per-turn traces also appear inline in the chat. This tab is for
-            admin lookup across the {traceList.length || "0"} most recent turn
-            {traceList.length === 1 ? "" : "s"}.
-          </p>
-        </div>
-        <div className="toolbar-actions">
-          <input name="tid" placeholder="tid" inputMode="numeric" />
-          <button className="button secondary" type="submit" title="Load by tid">
-            Load
-          </button>
-          <button
-            className="button secondary"
-            type="button"
-            onClick={refreshList}
-            title="Refresh trace list"
-            disabled={loadingList}
-          >
-            Refresh
-          </button>
-          <button
-            className={`button secondary${redact ? " active" : ""}`}
-            type="button"
-            onClick={() => setRedact((v) => !v)}
-            title="Redact content fields"
-          >
-            {redact ? "Redacted" : "Shown"}
-          </button>
-        </div>
-      </form>
-      {error ? <div className="banner error">{error}</div> : null}
-      <div className="trace-layout">
-        <div className="trace-list">
-          {traceList.map((entry) => (
-            <button
-              key={`${entry.tid}:${entry.ts}`}
-              type="button"
-              className={`trace-summary${activeTid === entry.tid ? " active" : ""}`}
-              onClick={() => loadTrace(entry.tid)}
-            >
-              <span className={`verdict-pill ${verdictKind(entry.action)}`}>{verdictLabel(entry.action)}</span>
-              <strong>T{entry.tid}</strong>
-              <span className="muted">
-                {entry.fired_predicates && entry.fired_predicates.length
-                  ? entry.fired_predicates.join(", ")
-                  : "no predicates fired"}
-              </span>
-              <span className="muted">{entry.wall_ms || 0}ms</span>
-            </button>
-          ))}
-          {!traceList.length && !loadingList ? (
-            <p className="muted">No traces yet. Issue a request through the chat tab to populate this list.</p>
-          ) : null}
-        </div>
-        <div className="runtime-box">
-          {activeTrace ? <TraceDetail trace={activeTrace} redact={redact} /> : (
-            <p className="muted">Select a turn to inspect.</p>
-          )}
-        </div>
+    <section className="trace-tab">
+      <FixtureNotice />
+      <div className="trace-tab-bar">
+        <h2>Trace</h2>
+        <button
+          type="button"
+          className={`chip-btn${redact ? " on" : ""}`}
+          onClick={() => setRedact((value) => !value)}
+        >
+          {redact ? "Content hidden" : "Content shown"}
+        </button>
+        <button className="button secondary" type="button" onClick={refreshList}>
+          Refresh
+        </button>
       </div>
+      <TraceWorkspace
+        traces={traceList}
+        activeTid={activeTid}
+        activeTrace={activeTrace}
+        sessionKey={activeSession?.key || ""}
+        onSelectSession={selectSession}
+        onSelectTurn={setActiveTid}
+        earlier={earlier}
+        redact={redact}
+        loading={loadingList}
+        error={error}
+        onRetry={refreshList}
+        detailLoading={detailLoading}
+      />
     </section>
   );
 }

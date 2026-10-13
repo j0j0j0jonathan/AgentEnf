@@ -28,3 +28,13 @@ The `after_tool_call` hook reports model-visible result content to `/v1/tool_res
 `sid` can explicitly override session identity for a controlled single-session run. Avoid one fixed identity across unrelated sessions. `blockApprovals` can require headless approval requests to stop. For interactive approvals, use the proxy console and keep its timeout shorter than the plugin's 120-second request timeout.
 
 The plugin's contract tests use a simulated OpenClaw hook registration. Before a live deployment, verify one allowed call, one blocked call and one approval with your installed OpenClaw version. Upstream [plugin installation](https://docs.openclaw.ai/tools/plugin) and [manifest documentation](https://docs.openclaw.ai/plugins/manifest) describe host configuration.
+
+### Attributed tool denials
+
+Blocked invocations include a readable AgentEnf attribution and a structured
+`[EnfAgent enforcement]` JSON record (the marker is retained for demo UI compatibility).
+It contains the rule identifiers when supplied by the proxy, call/session IDs,
+timepoint and the distinction between policy blocks, denied approvals and
+unavailable enforcement. This does not require the model to paraphrase the reason
+correctly. A custom dashboard may render the record as a notice; the plugin alone
+does not install or modify OpenClaw's dashboard.

@@ -1,3 +1,4 @@
+import { enforcementDenial } from "./denial.js";
 import fs from "fs";
 import { createHash } from "node:crypto";
 
@@ -371,7 +372,7 @@ export const pluginDefinition = {
         if (effective === "block") {
           return {
             block: true,
-            blockReason: `[AgentEnf] blocked ${mapped.tool}: ${reason || decision}`,
+            blockReason: enforcementDenial({tool: mapped.tool, reason, decision, source: verdictSource, response: rawResponse, callId: call_id, sessionId: cfg.sid}),
           };
         }
       },

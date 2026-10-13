@@ -1,19 +1,62 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getPendingApprovals, resolveApproval } from "../api.js";
+import { describeRequestError, getPendingApprovals, resolveApproval } from "../api.js";
+import { fixtureKind, fixtureMode, FIXTURE_PENDING } from "../fixtures.js";
 
 const APPROVAL_POLL_MS = 2000;
 
+function secondsLeft(entry, nowMs) {
+  if (Number.isFinite(entry.created_ts) && Number.isFinite(entry.timeout_seconds)) {
+    return ((entry.created_ts + entry.timeout_seconds) * 1000 - nowMs) / 1000;
+  }
+  return Number(entry.remaining_seconds) || 0;
+}
+
 function ApprovalsLayer({ setStatus }) {
   const [pending, setPending] = useState([]);
+  const [journal, setJournal] = useState([]);
+  const [approvalError, setApprovalError] = useState("");
   const [busyTid, setBusyTid] = useState(null);
   const intervalRef = useRef(null);
+  const previous = useRef([]);
+  const resolved = useRef(new Set());
 
   const refresh = useCallback(async () => {
     try {
-      const result = await getPendingApprovals();
-      setPending(Array.isArray(result.pending) ? result.pending : []);
-    } catch {
-      // silent — pending approvals failing should not break the rest of the UI
+      const result = fixtureMode()
+        ? {
+            pending:
+              fixtureKind() === "1"
+                ? FIXTURE_PENDING.filter((entry) => !resolved.current.has(entry.tid))
+                : [],
+          }
+        : await getPendingApprovals();
+      const next = (Array.isArray(result.pending) ? result.pending : []).filter(
+        (entry) => !resolved.current.has(entry.tid),
+      );
+      const nextIds = new Set(next.map((entry) => entry.tid));
+      const nowMs = Date.now();
+      const departed = previous.current.filter(
+        (entry) => !nextIds.has(entry.tid) && !resolved.current.has(entry.tid),
+      );
+      if (departed.length) {
+        setJournal((current) =>
+          [
+            ...departed.map((entry) => ({
+              tid: entry.tid,
+              label: entry.label,
+              status: secondsLeft(entry, nowMs) <= 0 ? "timed-out" : "left",
+              onTimeout: entry.on_timeout,
+              at: nowMs,
+            })),
+            ...current,
+          ].slice(0, 6),
+        );
+      }
+      previous.current = next;
+      setPending(next);
+      setApprovalError("");
+    } catch (err) {
+      setApprovalError(describeRequestError(err, "Could not load approval requests."));
     }
   }, []);
 
@@ -38,19 +81,32 @@ function ApprovalsLayer({ setStatus }) {
   async function decide(entry, decision) {
     setBusyTid(entry.tid);
     try {
-      await resolveApproval(entry.tid, decision);
+      if (!fixtureMode()) await resolveApproval(entry.tid, decision);
+      resolved.current.add(entry.tid);
       setPending((current) => current.filter((row) => row.tid !== entry.tid));
-      setStatus({ kind: "ok", text: `T${entry.tid}: ${decision}` });
+      previous.current = previous.current.filter((row) => row.tid !== entry.tid);
+      setJournal((current) =>
+        [{ tid: entry.tid, label: entry.label, status: "completed", decision, at: Date.now() }, ...current].slice(0, 6),
+      );
+      setStatus({ kind: "ok", text: `Turn ${entry.tid}: ${decision}` });
     } catch (err) {
-      setStatus({ kind: "error", text: err.message });
+      setJournal((current) =>
+        [{ tid: entry.tid, label: entry.label, status: "failed", error: describeRequestError(err), at: Date.now() }, ...current].slice(0, 6),
+      );
+      setStatus({ kind: "error", text: describeRequestError(err) });
     } finally {
       setBusyTid(null);
     }
   }
 
-  if (!pending.length) return null;
+  if (!pending.length && !journal.length && !approvalError) return null;
   return (
     <div className="approvals-layer">
+      {approvalError ? (
+        <div className="banner error" role="alert">
+          <p>{approvalError}</p>
+        </div>
+      ) : null}
       {pending.map((entry) => {
         // Prefer a client-side deadline (created_ts + timeout_seconds) so the
         // countdown ticks every second. Fall back to the server's snapshot
@@ -63,37 +119,18 @@ function ApprovalsLayer({ setStatus }) {
         const remaining = hasDeadline
           ? Math.max(0, Math.ceil((deadlineMs - now) / 1000))
           : Math.max(0, Number(entry.remaining_seconds) || 0);
-        const total = Number(entry.timeout_seconds) || 0;
-        const pct = total > 0 ? Math.max(0, Math.min(100, (remaining / total) * 100)) : 0;
         const urgent = remaining <= 10;
         const label = String(entry.label || "").trim();
         return (
           <div className="approval-card" key={entry.tid}>
             <div className="approval-header">
-              <strong>T{entry.tid} needs a decision</strong>
+              <strong>Turn {entry.tid} needs a decision</strong>
+              <span className="status-tag status-approval">Pending</span>
               <span className={urgent ? "approval-count urgent" : "approval-count"}>
                 {remaining}s
               </span>
             </div>
-            <div className="approval-meta">
-              {entry.phase ? <span className="tag tag-session">{entry.phase}</span> : null}
-              {entry.sid ? <span className="muted">session {String(entry.sid).slice(0, 8)}</span> : null}
-              <span className="muted">fallback: {entry.on_timeout}</span>
-            </div>
-            <div className="approval-progress" aria-hidden="true">
-              <span
-                className={urgent ? "approval-progress-fill urgent" : "approval-progress-fill"}
-                style={{ width: `${pct}%` }}
-              />
-            </div>
-            {label ? (
-              <div className="approval-preview">
-                <span className="approval-preview-label">action</span>
-                <p>{label}</p>
-              </div>
-            ) : (
-              <p className="muted">No action preview provided.</p>
-            )}
+            {label ? <p className="approval-action">{label}</p> : <p className="muted">No action preview provided.</p>}
             <div className="approval-actions">
               <button
                 className="button secondary"
@@ -112,9 +149,38 @@ function ApprovalsLayer({ setStatus }) {
                 {entry.phase === "tool" ? "Allow Tool Use" : "Approve"}
               </button>
             </div>
+            <p className="approval-meta">
+              {entry.phase ? <span className="approval-phase">{entry.phase}</span> : null}
+              {entry.sid ? <span title={String(entry.sid)}>Session {String(entry.sid).length > 28 ? `${String(entry.sid).slice(0, 12)}…${String(entry.sid).slice(-6)}` : entry.sid}</span> : null}
+              <span>If the deadline passes, the server applies {entry.on_timeout || "its timeout rule"}.</span>
+            </p>
           </div>
         );
       })}
+      {journal.map((entry) => (
+        <div className={`approval-card journal journal-${entry.status}`} key={`${entry.tid}-${entry.at}`}>
+          <div className="approval-header">
+            <strong>Turn {entry.tid}</strong>
+            <span className={`status-tag status-${entry.status}`}>
+              {entry.status === "completed"
+                ? `Completed · ${entry.decision}`
+                : entry.status === "failed"
+                  ? "Failed"
+                  : entry.status === "timed-out"
+                    ? "Timed out"
+                    : "No longer pending"}
+            </span>
+          </div>
+          {entry.label ? <p>{entry.label}</p> : null}
+          {entry.status === "failed" ? <p>{entry.error}</p> : null}
+          {entry.status === "timed-out" ? (
+            <p>The deadline passed. The server applies {entry.onTimeout || "its timeout rule"}.</p>
+          ) : null}
+          {entry.status === "left" ? (
+            <p>This request left the pending list. No timeout event was returned.</p>
+          ) : null}
+        </div>
+      ))}
     </div>
   );
 }

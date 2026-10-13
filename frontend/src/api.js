@@ -10,20 +10,49 @@ async function request(path, options = {}) {
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(payload.detail || payload.error || `${response.status} ${response.statusText}`);
+    const error = new Error(payload.detail || payload.error || `${response.status} ${response.statusText}`);
+    error.status = response.status;
+    throw error;
   }
   return payload;
 }
 
-function adminTokenHeader() {
+export function describeRequestError(error, fallback = "Request failed.") {
+  const status = Number(error?.status || 0);
+  const message = String(error?.message || "");
+  if (status === 401 || /invalid admin token/i.test(message)) {
+    return "Admin token missing or rejected.";
+  }
+  if (status === 503 && /not configured/i.test(message)) {
+    return "Admin token is not configured on the proxy.";
+  }
+  if (
+    status === 502
+    || status === 504
+    || /failed to fetch|networkerror|load failed|bad gateway|gateway timeout/i.test(message)
+  ) {
+    return "AgentEnf is not reachable. The last view stays on screen.";
+  }
+  return message || fallback;
+}
+
+function readAdminToken() {
   const params = new URLSearchParams(window.location.search);
   const fromUrl = params.get("admin_token");
   if (fromUrl) {
     window.localStorage.setItem("enfguard_admin_token", fromUrl);
-    return { "x-admin-token": fromUrl };
+    params.delete("admin_token");
+    const query = params.toString();
+    const next = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
+    window.history.replaceState(null, "", next);
+    return fromUrl;
   }
-  const stored = window.localStorage.getItem("enfguard_admin_token");
-  return stored ? { "x-admin-token": stored } : {};
+  return window.localStorage.getItem("enfguard_admin_token") || "";
+}
+
+function adminTokenHeader() {
+  const token = readAdminToken();
+  return token ? { "x-admin-token": token } : {};
 }
 
 export function getPolicies() {

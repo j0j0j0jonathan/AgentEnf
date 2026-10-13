@@ -1,3 +1,47 @@
+import { Ban, Check, Hand, TriangleAlert } from "lucide-react";
+import { verdictKind, verdictLabel } from "../traceUtils.js";
+
+const VERDICT_ICONS = {
+  allow: Check,
+  warn: TriangleAlert,
+  approval: Hand,
+  block: Ban,
+};
+
+function VerdictMark({ action, size = 18 }) {
+  const text = String(action || "");
+  if (!text) {
+    return (
+      <span className="verdict-pill none">
+        <span>No verdict</span>
+      </span>
+    );
+  }
+  const kind = verdictKind(text);
+  const Icon = VERDICT_ICONS[kind] || Check;
+  return (
+    <span className={`verdict-pill ${kind}`}>
+      <Icon size={size} strokeWidth={2.25} aria-hidden="true" />
+      <span>{verdictLabel(text)}</span>
+    </span>
+  );
+}
+
+function FixtureNotice() {
+  const kind = new URLSearchParams(window.location.search).get("fixture");
+  const text = {
+    "1": "Showing labelled fixtures. Remove ?fixture=1 for the live proxy.",
+    empty: "Showing the empty fixture. Remove ?fixture=empty for the live proxy.",
+    error: "Showing the error fixture. Remove ?fixture=error for the live proxy.",
+  }[kind];
+  if (!text) return null;
+  return (
+    <div className="banner fixture" role="status">
+      <p>{text}</p>
+    </div>
+  );
+}
+
 function StatusPill({ kind, text }) {
   return (
     <div className={`status ${kind}`}>
@@ -87,4 +131,4 @@ function SwitchMini({ entry, onChange }) {
   );
 }
 
-export { StatusPill, Metric, EnforcementModeControl, ToggleControl, SwitchMini };
+export { StatusPill, Metric, EnforcementModeControl, ToggleControl, SwitchMini, VerdictMark, FixtureNotice };
