@@ -1,0 +1,22 @@
+# Offline wiring check. No model predicates, API calls, approvals or execution.
+backend:
+  ingest_judges:
+    enabled: false
+runtime:
+  judge_strategy: "off"
+feedback:
+  enabled: false
+human_approval:
+  enabled: false
+predicates: []
+policies:
+  - id: quickstart_credentials
+    enabled: true
+    mfotl: |
+      {"quickstart_credential_read"}{
+      ALWAYS (FORALL t, call_id, tool, input.
+        (PolicyActive(t, "quickstart_credentials")
+         AND ToolPlanned(t, call_id, tool, input)
+         AND Classify(t, call_id, "path_sensitivity", "credentials"))
+        IMPLIES:R Block(t, "tool", "quickstart_credential_read", "quickstart policy restricts credential-file access"))
+      }

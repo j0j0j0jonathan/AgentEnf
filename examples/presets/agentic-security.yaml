@@ -1,47 +1,10 @@
-# Agentic Security: the shipped all-13-category workstation-agent security pack.
-#
-# This is the product-facing headline pack that sits next to the governance
-# presets in this folder (cost_control, privacy_shield, local_only, ...). It is
-# the SAME policy set evaluated in the thesis, with the graduated Approve / Warn
-# / Block tiers kept on purpose (unlike the binary eval instrument
-# eval_combined_no_pathconf.yaml, which collapses Approve->Block and Warn->Allow
-# for a clean benign/malicious oracle).
-#
-# Maintained deployment preset for AgentEnf.
-# This file is a packaged copy. Edit the canonical source and re-copy, and re-run
-# the OCaml EnfGuard type-check on load. Covers reconnaissance, resource
-# development, initial access, execution, persistence, privilege escalation,
-# defense evasion, credential access, discovery, lateral movement, collection,
-# exfiltration, impact, plus provenance and path-confinement.
-# ---------------------------------------------------------------------------
-# Combined OpenClaw/NanoClaw supervisor demo pack - all 13 categories.
-#
-# Scope: all 13 built categories, each folded in from its current standalone
-# *_classify_policies.yaml pack. Temporal tiers use
-# native metric intervals over wall-second trace time. The Python bridge sends
-# an empty timestamp heartbeat while metric policies are loaded, so idle time
-# advances continuously instead of being replayed by the next tool request.
-# Full direct, accumulation, provenance, and cross-category tiers are included.
-#   Cat 1  Reconnaissance
-#   Cat 2  Resource Development
-#   Cat 3  Initial Access
-#   Cat 4  Execution
-#   Cat 5  Persistence
-#   Cat 6  Privilege Escalation
-#   Cat 7  Defense Evasion
-#   Cat 8  Credential Access
-#   Cat 9  Discovery
-#   Cat 10 Lateral Movement
-#   Cat 11 Collection
-#   Cat 12 Exfiltration
-#   Cat 13 Impact
-#
-# Evidence status is tracked separately from policy inclusion. Categories 1-11
-# have fresh NanoClaw evidence. Category 12 is currently being tested, and
-# Category 13 has a prepared 23-row matrix for the final fresh run.
-#
-# `external_judge` (disabled) is a single-LLM-judge comparison baseline: enable
-# only it in the UI to compare the classify-first packs against one-shot judging.
+# Maintained deployment preset: 15 enabled policy groups, 79 labelled rules.
+# Covers the 13-category agent-security taxonomy plus provenance and path checks.
+# This is NOT the exact thesis evaluation pack (18 groups, 121 labelled rules),
+# retained at tests/fixtures/policies/eval_combined_graduated_a3s.yaml.
+# Review thresholds, classifier backends, timeouts and approval handling for your
+# deployment. Comments describe scope, not a guarantee of attack coverage.
+# The external_judge comparison baseline is disabled by default.
 
 backend:
   chat_llm: anthropic

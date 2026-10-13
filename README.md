@@ -6,43 +6,53 @@ AgentEnf intercepts chat traffic and planned tool actions, converts them into st
 
 Supported interfaces include OpenAI-compatible chat, OpenAI Responses, Anthropic Messages, and pre-tool and post-tool HTTP hooks. Integration examples are provided for OpenClaw and NanoClaw. The React console shows policies, traces, and pending approvals.
 
-## Run from source
+## Start here: see an Allow and a Block
 
-Requirements: Python 3.12+, Node.js 22.12+ for the console, and a compatible EnfGuard executable. Install the monitor using [the monitor setup instructions](docs/monitor.md) first. AgentEnf does not bundle its binary.
+You need **Python 3.12+, Node.js 22.12+ and a separately built EnfGuard monitor**.
+Start with the [step-by-step quickstart](docs/quickstart.md). It makes no model
+calls, needs no API key, and submits two tool proposals without executing them.
+
+After [installing the monitor](docs/monitor.md):
 
 ```bash
 git clone https://github.com/j0j0j0jonathan/AgentEnf.git
 cd AgentEnf
 python3.12 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
 python -m pip install -e '.[dev]'
 npm --prefix frontend ci
 npm --prefix frontend run build
-
-export ENFGUARD_ADMIN_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
-export ENFGUARD_BIN=/absolute/path/to/whyenf/_build/default/bin/enfguard.exe
-export ENFGUARD_TIME_MODE=wall_seconds
-export ENFGUARD_YAML=examples/presets/agentic-security.yaml
-export ENFGUARD_WS_HOST_ROOTS=/absolute/path/to/agent/workspace
-export OPENAI_API_KEY=your-provider-key
-python -m uvicorn proxy:app --host 127.0.0.1 --port 9000 --workers 1
+python scripts/quickstart.py init --monitor "/absolute/path/to/whyenf/_build/default/bin/enfguard.exe"
+python scripts/quickstart.py start
 ```
 
-Open `http://127.0.0.1:9000/enforcement` or `/chat`. Open the console once with `?admin_token=YOUR_TOKEN` to store its admin token locally in the browser. Keep the token in your local environment. `.env.example` lists common settings, but the application does not automatically load that file.
-
-The security pack enables semantic checks and may call a model. See [configuration](docs/configuration.md) for model selection, disabling ingest classifiers, and approval behaviour. For a tool-only check without model calls, use `examples/nanoclaw/enfguard.nanoclaw-tools.yaml` and `ENFGUARD_TOOL_JUDGE=0`.
-
-A tool gate checks an operation. It does not execute it:
+In a second terminal, enter the same checkout and activate `.venv`, then run:
 
 ```bash
-curl http://127.0.0.1:9000/v1/tool_execute \
-  -H 'Content-Type: application/json' \
-  -H "X-Admin-Token: $ENFGUARD_ADMIN_TOKEN" \
-  -d '{"sid":"demo","call_id":"demo-1","tool_name":"bash","tool_input":{"command":"echo hello"},"workspace_roots":["/workspace"]}'
+source .venv/bin/activate
+python scripts/quickstart.py check
+python scripts/quickstart.py console
 ```
 
-The response contains `decision: "allow"` or `"block"`. A runtime must await this response before running the operation. An interactive approval keeps the request pending until feedback or the configured timeout.
+You should see **ALLOW** for a proposed README read and **BLOCK** for a proposed
+credential-file read. The helper shares a saved local admin token between
+terminals and opens the authenticated dashboard. See the guide for troubleshooting
+and shutdown. This checks enforcement wiring; an agent still needs a runtime hook
+to stop a real operation.
+
+## Choose a configuration
+
+| What you want | Where to start |
+|---|---|
+| Offline installation check | [Quickstart](docs/quickstart.md) |
+| One temporal rule with typed model evidence | [Decisions example](examples/decisions.yaml) and [backend guide](docs/decisions.md) |
+| Broader deployment pack | [Default preset](examples/presets/agentic-security.yaml): 15 enabled groups, 79 labelled rules |
+| Exact thesis evaluation pack | [Evaluation fixture](tests/fixtures/policies/eval_combined_graduated_a3s.yaml): 18 enabled groups, 121 labelled rules |
+| Direct launch, credentials and approvals | [Configuration](docs/configuration.md) |
+
+The two packs are different configurations. The default preset is not the exact
+pack used for the reported evaluation. Model-based configurations require provider
+credentials and can incur API costs. Existing backends remain available.
 
 ## Integrate an agent
 
@@ -56,7 +66,7 @@ The response contains `decision: "allow"` or `"block"`. A runtime must await thi
 python -m pytest
 python -m ruff check
 npm --prefix frontend run build
-node --test integrations/nanoclaw/*.test.mjs integrations/openclaw/*.test.mjs
+node --test integrations/nanoclaw/*.test.mjs integrations/openclaw/*.test.mjs frontend/src/traceUtils.test.mjs
 ```
 
 Most Python tests use stubs. Tests requiring the actual monitor skip unless `ENFGUARD_BIN` is explicitly set. Set it to a compatible executable to include them. Tests classify attack-shaped strings without executing those commands.
