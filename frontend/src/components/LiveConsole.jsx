@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { describeRequestError, getTrace, listTraces } from "../api.js";
 import { fixtureKind, fixtureList, fixtureMode, fixtureTrace } from "../fixtures.js";
 import { POLICY_META } from "../policyMeta.js";
-import { enforcerEventLog, eventsInOrder, formatClock, groupSessions, sessionIdOf, verdictKind } from "../traceUtils.js";
-import { EnforcementModeControl, FixtureNotice, SwitchMini, ToggleControl } from "./ui.jsx";
+import { enforcerEventLog, eventsInOrder, formatClock, groupSessions, sessionIdOf, tracesForFilter, verdictKind } from "../traceUtils.js";
+import { FixtureNotice, SwitchMini, ToggleControl } from "./ui.jsx";
 import { TraceWorkspace } from "./TraceWorkspace.jsx";
 
 function loadTraceList() {
@@ -29,8 +29,7 @@ const NO_TURNS = [];
 function LiveConsole({
   policyState,
   switches,
-  enforcementMode,
-  onChangeMode,
+  reachable = true,
   onTogglePolicy,
   onUpdateSwitch,
   onReload,
@@ -76,6 +75,9 @@ function LiveConsole({
         const list = Array.isArray(result.traces) ? result.traces : [];
         setTraceList(list);
         setError("");
+        setStatus?.((current) => (
+          current?.text === "Not reachable" ? { kind: "idle", text: "" } : current
+        ));
         if (follow && list.length) {
           setActiveTid((current) => (current === list[0].tid ? current : list[0].tid));
           const key = sessionIdOf(list[0]) || "__unscoped__";
@@ -89,7 +91,11 @@ function LiveConsole({
           });
         }
       } catch (err) {
-        if (!cancelled) setError(describeError(err, "Could not load traces."));
+        if (!cancelled) {
+          const text = describeError(err, "Could not load traces.");
+          setError(text);
+          if (/not reachable/i.test(text)) setStatus?.({ kind: "error", text: "Not reachable" });
+        }
       } finally {
         if (!cancelled) setLoadingList(false);
       }
@@ -162,6 +168,7 @@ function LiveConsole({
     () => (Array.isArray(switches) ? switches.filter((s) => s.id !== "enforcement_mode") : []),
     [switches],
   );
+  const showRail = policyIds.length > 0 || railSwitches.length > 0;
 
   // Verdict tally across the recent turns, for the stream-head counters and to
   // disable a filter chip that would match nothing.
@@ -174,13 +181,12 @@ function LiveConsole({
     return acc;
   }, [traceList]);
 
-  const visibleTraces = useMemo(
-    () =>
-      verdictFilter === "all"
-        ? traceList
-        : traceList.filter((entry) => verdictKind(entry.action) === verdictFilter),
+  const filtered = useMemo(
+    () => tracesForFilter(traceList, verdictFilter),
     [traceList, verdictFilter],
   );
+  const visibleTraces = filtered.traces;
+  const offline = !reachable || /not reachable/i.test(error);
 
   const sessions = useMemo(() => groupSessions(visibleTraces), [visibleTraces]);
   const activeSession = sessions.find((item) => item.key === sessionKey) || sessions[0];
@@ -196,11 +202,11 @@ function LiveConsole({
         action: turn.action,
         toolName: turn.tool_name || "",
         time: formatClock(turn.ts),
-        log: detail ? enforcerEventLog(detail) : [],
+        log: detail ? enforcerEventLog(detail, { redact }) : [],
         steps: detail ? eventsInOrder(detail) : [],
       };
     });
-  }, [sessionTurns, activeTid, detailCache]);
+  }, [sessionTurns, activeTid, detailCache, redact]);
 
   useEffect(() => {
     if (!sessionTurns.length) return undefined;
@@ -311,32 +317,32 @@ function LiveConsole({
       <div className="console-bar">
         <button
           type="button"
-          className={live ? "live-btn on" : "live-btn"}
+          className={live && !offline ? "live-btn on" : "live-btn"}
           onClick={() => setLive((v) => !v)}
-          title={live ? "Streaming live. Click to pause." : "Paused. Click to stream live."}
+          aria-pressed={live && !offline}
+          title={live && !offline ? "Streaming live. Click to pause." : "Paused. Click to stream live."}
         >
           <span className="live-dot" />
-          {live ? "LIVE" : "PAUSED"}
+          {live && !offline ? "LIVE" : "PAUSED"}
         </button>
         <button
           type="button"
           className={follow ? "chip-btn on" : "chip-btn"}
           onClick={() => setFollow((v) => !v)}
+          aria-pressed={follow}
           title="Keep the newest turn selected as the run proceeds"
         >
           Follow newest
         </button>
-        <span className="console-sep" />
-        <span className="console-label">Enforcement</span>
-        <EnforcementModeControl value={enforcementMode} onChange={onChangeMode} />
         <span className="console-spacer" />
         <button
           type="button"
           className={`chip-btn${redact ? " on" : ""}`}
           onClick={() => setRedact((v) => !v)}
-          title="Redact content fields in the verdict detail"
+          aria-pressed={redact}
+          title="Hide commands, results, and replies in the event list"
         >
-          {redact ? "Redacted" : "Content shown"}
+          {redact ? "Show content" : "Hide content"}
         </button>
         <button
           type="button"
@@ -352,7 +358,8 @@ function LiveConsole({
         </button>
       </div>
 
-      <div className="console-grid">
+      <div className={showRail ? "console-grid" : "console-grid no-rail"}>
+        {showRail ? (
         <aside className="console-rail">
           <div className="rail-section">
             <div className="rail-head">
@@ -426,32 +433,9 @@ function LiveConsole({
             ) : null}
           </div>
         </aside>
+        ) : null}
 
         <div className="console-main">
-          <div className="stream-head secondary-control">
-            <span>Filter</span>
-            <div className="stream-filters" role="group" aria-label="Filter turns by verdict">
-              {[
-                ["all", "all", traceList.length],
-                ["block", "block", verdictCounts.block],
-                ["warn", "warn", verdictCounts.warn],
-                ["approval", "approval", verdictCounts.approval],
-                ["allow", "allow", verdictCounts.allow],
-              ].map(([key, label, count]) => (
-                <button
-                  key={key}
-                  type="button"
-                  className={`verdict-filter v-${key}${verdictFilter === key ? " on" : ""}`}
-                  onClick={() => setVerdictFilter(key)}
-                  disabled={key !== "all" && !count}
-                  aria-pressed={verdictFilter === key}
-                  title={`Show ${label} turns`}
-                >
-                  {label} <span className="vf-count">{count}</span>
-                </button>
-              ))}
-            </div>
-          </div>
           {!follow && newCount > 0 ? (
             <button
               type="button"
@@ -463,6 +447,32 @@ function LiveConsole({
             </button>
           ) : null}
           <TraceWorkspace
+            toolbar={(
+              <div className="stream-head">
+                <span>Filter</span>
+                <div className="stream-filters" role="group" aria-label="Filter turns by verdict">
+                  {[
+                    ["all", "all", traceList.length],
+                    ["block", "block", verdictCounts.block],
+                    ["warn", "warn", verdictCounts.warn],
+                    ["approval", "approval", verdictCounts.approval],
+                    ["allow", "allow", verdictCounts.allow],
+                  ].map(([key, label, count]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      className={`verdict-filter v-${key}${verdictFilter === key ? " on" : ""}`}
+                      onClick={() => setVerdictFilter(key)}
+                      disabled={key !== "all" && !count}
+                      aria-pressed={verdictFilter === key}
+                      title={`Show ${label} turns`}
+                    >
+                      {label} <span className="vf-count">{count}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             traces={visibleTraces}
             activeTid={activeTid}
             activeTrace={activeTrace}
@@ -478,6 +488,8 @@ function LiveConsole({
               setReloadTick((value) => value + 1);
             }}
             detailLoading={detailLoading}
+            detailByTid={detailCache}
+            contextTids={filtered.contextTids}
           />
         </div>
       </div>

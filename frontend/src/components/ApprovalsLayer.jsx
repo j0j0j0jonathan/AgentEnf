@@ -88,7 +88,10 @@ function ApprovalsLayer({ setStatus }) {
       setJournal((current) =>
         [{ tid: entry.tid, label: entry.label, status: "completed", decision, at: Date.now() }, ...current].slice(0, 6),
       );
-      setStatus({ kind: "ok", text: `Turn ${entry.tid}: ${decision}` });
+      setStatus({
+        kind: decision === "deny" ? "block" : "ok",
+        text: `Turn ${entry.tid}: ${decision === "deny" ? "blocked" : "allowed"}`,
+      });
     } catch (err) {
       setJournal((current) =>
         [{ tid: entry.tid, label: entry.label, status: "failed", error: describeRequestError(err), at: Date.now() }, ...current].slice(0, 6),

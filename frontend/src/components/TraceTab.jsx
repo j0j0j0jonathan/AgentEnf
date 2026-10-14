@@ -96,10 +96,10 @@ function TraceTab() {
       action: turn.action,
       toolName: turn.tool_name || "",
       time: formatClock(turn.ts),
-      log: detailCache[turn.tid] ? enforcerEventLog(detailCache[turn.tid]) : [],
+      log: detailCache[turn.tid] ? enforcerEventLog(detailCache[turn.tid], { redact }) : [],
       steps: detailCache[turn.tid] ? eventsInOrder(detailCache[turn.tid]) : [],
     }));
-  }, [sessionTurns, activeTid, detailCache]);
+  }, [sessionTurns, activeTid, detailCache, redact]);
 
   function selectSession(key) {
     setSessionKey(key);
@@ -116,8 +116,10 @@ function TraceTab() {
           type="button"
           className={`chip-btn${redact ? " on" : ""}`}
           onClick={() => setRedact((value) => !value)}
+          aria-pressed={redact}
+          title="Hide commands, results, and replies in the event list"
         >
-          {redact ? "Content hidden" : "Content shown"}
+          {redact ? "Show content" : "Hide content"}
         </button>
         <button className="button secondary" type="button" onClick={refreshList}>
           Refresh
@@ -136,6 +138,7 @@ function TraceTab() {
         error={error}
         onRetry={refreshList}
         detailLoading={detailLoading}
+        detailByTid={detailCache}
       />
     </section>
   );

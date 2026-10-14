@@ -174,13 +174,14 @@ p {
 .mode-control {
   display: inline-flex;
   overflow: hidden;
+  padding: 2px;
   border: 1px solid var(--border-strong);
   border-radius: var(--r-sm);
   background: var(--surface);
 }
 
 .mode-control button {
-  height: 34px;
+  height: 30px;
   padding: 0 12px;
   border-left: 1px solid var(--border);
   background: transparent;
@@ -219,7 +220,7 @@ p {
 
 .metric span {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   line-height: 1.1;
   letter-spacing: 0.04em;
@@ -247,7 +248,8 @@ p {
   font-weight: 600;
 }
 
-.status.error {
+.status.error,
+.status.block {
   color: var(--block);
   border-color: var(--block);
   background: var(--block-soft);
@@ -1342,13 +1344,13 @@ textarea {
 }
 
 .live-btn.on {
-  border-color: var(--block);
-  color: var(--block);
-  background: var(--block-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .live-btn.on .live-dot {
-  background: var(--block);
+  background: var(--accent);
   animation: live-pulse 1.4s ease-in-out infinite;
 }
 
@@ -1382,6 +1384,10 @@ textarea {
   grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
   gap: 16px;
   align-items: start;
+}
+
+.console-grid.no-rail {
+  grid-template-columns: 1fr;
 }
 
 .console-rail,
@@ -1543,7 +1549,8 @@ textarea {
 .stream-head {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
+  justify-content: flex-start;
+  gap: 8px;
   padding: 4px 2px 0;
   font-size: 14px;
   font-weight: 650;
@@ -1666,7 +1673,18 @@ textarea {
 }
 
 .console.density-compact .rail-policy-label code {
-  font-size: 11px;
+  font-size: 12px;
+}
+
+.console.density-compact .turn-button,
+.console.density-compact .session-button {
+  padding: 6px 8px;
+  gap: 8px;
+}
+
+.console.density-compact .turn-list,
+.console.density-compact .session-list {
+  gap: 4px;
 }
 
 /* Detail */
@@ -1870,6 +1888,10 @@ textarea {
   align-items: start;
 }
 
+.trace-workspace.single {
+  grid-template-columns: minmax(280px, 520px);
+}
+
 .session-column,
 .decision-column {
   min-width: 0;
@@ -1939,6 +1961,10 @@ textarea {
   align-items: center;
 }
 
+.turn-button.is-context {
+  opacity: 0.62;
+}
+
 .session-button:hover,
 .turn-button:hover {
   background: var(--surface-hover);
@@ -1975,9 +2001,8 @@ textarea {
 
 .turn-copy span {
   display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .turn-button time {
@@ -2425,6 +2450,10 @@ textarea {
   .decision-band,
   .compare-row {
     grid-template-columns: 1fr;
+  }
+
+  .decision-column {
+    order: -1;
   }
 
   .session-column,

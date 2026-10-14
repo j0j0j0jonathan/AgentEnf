@@ -12,6 +12,7 @@ import {
   phaseTimingLabel,
   predicateMatched,
   shortText,
+  storyLine,
 } from "../traceUtils.js";
 
 function CopyButton({ value, disabled = false }) {
@@ -225,7 +226,7 @@ function PredicateLine({ tid, row, redact }) {
   );
 }
 
-function EnforcerLog({ entries, redact }) {
+function EnforcerLog({ entries, redact = false }) {
   if (!entries.length) {
     return <p className="muted">No enforcer events were recorded for this turn.</p>;
   }
@@ -244,9 +245,7 @@ function EnforcerLog({ entries, redact }) {
             {entry.groups.map((group) => (
               <div key={group.key}>
                 <div className="event-group-label">{group.label}</div>
-                <pre className="event-pre">{group.lines.map((line) => (
-                  redact ? formatEventHidden(line) : line.text
-                )).join("\n")}</pre>
+                <pre className="event-pre">{group.lines.map((line) => line.text).join("\n")}</pre>
               </div>
             ))}
             {!redact && full.length ? (
@@ -259,13 +258,10 @@ function EnforcerLog({ entries, redact }) {
   );
 }
 
-function formatEventHidden(line) {
-  return line.text.replace(/"(?:[^"\\]|\\.){25,}"/g, "\"…\"");
-}
-
 function DecisionView({ trace, earlier = [], redact = false }) {
   if (!trace) return null;
-  const eventLog = enforcerEventLog(trace);
+  const eventLog = enforcerEventLog(trace, { redact });
+  const story = storyLine(decisionAccount(trace));
   const stamp = formatClock(trace.session_records?.[0]?.ts || trace.ts);
   const sid = trace.sid || "";
 
@@ -273,8 +269,9 @@ function DecisionView({ trace, earlier = [], redact = false }) {
     <article className="decision-view">
       <header className="decision-head">
         <div>
-          <h2>Turn {trace.tid}</h2>
+          <h2>{story.headline}</h2>
           <p className="decision-meta">
+            <span>Turn {trace.tid}</span>
             {stamp ? <time>{stamp}</time> : null}
             {sid ? (
               <span className="identifier">
@@ -289,11 +286,11 @@ function DecisionView({ trace, earlier = [], redact = false }) {
         </div>
       </header>
       <DecisionBand trace={trace} />
+      <PredicateComparison trace={trace} redact={redact} />
       <section className="event-section" aria-label="Enforcer events">
         <h3>Enforcer events</h3>
         <EnforcerLog entries={eventLog} redact={redact} />
       </section>
-      <PredicateComparison trace={trace} redact={redact} />
       {earlier.length ? (
         <section className="event-section">
           <h3>Earlier in this session</h3>

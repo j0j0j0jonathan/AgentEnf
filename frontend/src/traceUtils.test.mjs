@@ -4,12 +4,16 @@ import {
   classifierAccount,
   decisionAccount,
   enforcerEventLog,
+  eventSentence,
   eventsInOrder,
   groupSessions,
   isAfterTool,
   isToolGate,
   predicateMatched,
   sessionIdFromRecords,
+  storyLine,
+  tracesForFilter,
+  turnCaption,
   verdictKind,
 } from "./traceUtils.js";
 
@@ -62,10 +66,51 @@ assert.equal(late.differs, true);
 
 const logged = enforcerEventLog(earlier);
 const loggedLines = logged.flatMap((entry) => entry.groups.flatMap((group) => group.lines.map((line) => line.text)));
-assert.ok(loggedLines.some((line) => line.startsWith("Turn(")));
-assert.ok(loggedLines.some((line) => line.startsWith("ToolResult(")));
-assert.ok(loggedLines.some((line) => line.startsWith("Untrusted(")));
-assert.ok(loggedLines.some((line) => line.startsWith("Classify(")));
+assert.ok(loggedLines.some((line) => line.startsWith("Turn context")));
+assert.ok(loggedLines.some((line) => line.startsWith("Tool result:")));
+assert.ok(loggedLines.some((line) => line.startsWith("Untrusted source:")));
+assert.ok(loggedLines.some((line) => line.startsWith("Classified ")));
+assert.equal(storyLine(late).headline, "Allowed · blocked too late");
+assert.equal(storyLine(gate).headline, "Blocked");
+assert.equal(turnCaption(afterTool, afterTool).subtitle, "Allowed · blocked too late");
+assert.equal(turnCaption(blocked, blocked).subtitle, "deletion follows an untrusted instruction-like result");
+assert.equal(turnCaption(blocked, blocked).action, "tool_block");
+
+const hidden = eventSentence(
+  { name: "ToolPlanned", args: [21, "rm-1", "bash", "rm notes.txt"] },
+  { redact: true },
+);
+assert.equal(hidden, "Planned bash: …");
+assert.equal(hidden.includes("rm notes.txt"), false);
+assert.equal(
+  eventSentence({ name: "ToolCall", args: [21, "rm-1", "bash", "rm notes.txt"] }),
+  "Proposed bash: rm notes.txt",
+);
+for (const event of [
+  { name: "Message", args: [21, "user", "secret", 1] },
+  { name: "ToolResult", args: [21, "rm-1", "secret", 0] },
+  { name: "Completion", args: [21, "secret", 1] },
+]) {
+  assert.equal(eventSentence(event, { redact: true }).includes("secret"), false);
+}
+
+const filtered = tracesForFilter(
+  [
+    { tid: 11, ts: 1, sid: "fixture-temporal", action: "tool_result_allow" },
+    { tid: 12, ts: 2, sid: "fixture-temporal", action: "tool_block" },
+    { tid: 3, ts: 3, sid: "fixture-predicates", action: "response_blocked" },
+    { tid: 4, ts: 4, sid: "fixture-failure", action: "allowed" },
+  ],
+  "block",
+);
+assert.deepEqual(filtered.traces.map((turn) => turn.tid), [11, 12, 3]);
+assert.deepEqual(filtered.contextTids, [11]);
+const unscoped = tracesForFilter([
+  { tid: 1, ts: 1, action: "tool_allow" },
+  { tid: 2, ts: 2, action: "tool_block" },
+], "block");
+assert.deepEqual(unscoped.traces.map((turn) => turn.tid), [2]);
+assert.deepEqual(unscoped.contextTids, []);
 
 const steps = eventsInOrder(earlier);
 assert.ok(steps.some((step) => step.title === "Tool result" && step.body.includes("delete backups")));

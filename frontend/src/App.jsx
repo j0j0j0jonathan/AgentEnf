@@ -312,8 +312,7 @@ function App() {
           <LiveConsole
             policyState={policyDraft}
             switches={switches}
-            enforcementMode={enforcementMode}
-            onChangeMode={changeEnforcementMode}
+            reachable={reachable}
             onTogglePolicy={togglePolicy}
             onUpdateSwitch={updateSwitch}
             onReload={reloadFromYaml}

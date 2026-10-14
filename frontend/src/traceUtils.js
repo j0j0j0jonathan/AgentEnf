@@ -45,7 +45,64 @@ const EVENT_GROUP_META = [
   ["outbound", "Outbound", "Sent to EnfGuard"],
 ];
 
-export function enforcerEventLog(trace) {
+function eventText(value, redact) {
+  if (value == null || value === "") return "";
+  if (typeof value === "object") return redact ? "…" : shortText(JSON.stringify(value), 140);
+  const text = String(value);
+  if (redact && text.trim()) return "…";
+  return shortText(text, 140);
+}
+
+// One sentence per signature event. The function-call form stays available
+// as `full` for the operator who wants the raw arguments.
+export function eventSentence(event, options = {}) {
+  const redact = Boolean(options.redact);
+  const name = String(event?.name || "Event");
+  const args = Array.isArray(event?.args) ? event.args : [];
+  if (name === "Turn") {
+    const session = eventText(args[2], redact);
+    return session && session !== "…" ? `Turn context · ${session}` : "Turn context";
+  }
+  if (name === "ToolPlanned" || name === "ToolCall") {
+    const verb = name === "ToolPlanned" ? "Planned" : "Proposed";
+    const tool = eventText(args[2], false) || "tool";
+    const body = eventText(args[3], redact);
+    return body ? `${verb} ${tool}: ${body}` : `${verb} ${tool}`;
+  }
+  if (name === "ToolResult") {
+    const body = eventText(args[2], redact);
+    return body ? `Tool result: ${body}` : "Tool result";
+  }
+  if (name === "Message") {
+    const role = eventText(args[1], false) || "message";
+    const body = eventText(args[2], redact);
+    return body ? `${role} message: ${body}` : `${role} message`;
+  }
+  if (name === "Completion" || name === "CompletionRedacted" || name === "CompletionReleased") {
+    const body = eventText(args[1], redact);
+    const label = name === "Completion" ? "Model response" : name;
+    return body ? `${label}: ${body}` : label;
+  }
+  if (name === "Classify") {
+    const dimension = eventText(args[2], false) || "dimension";
+    const level = eventText(args[3], redact);
+    return level ? `Classified ${dimension} as ${level}` : `Classified ${dimension}`;
+  }
+  if (name === "Untrusted") {
+    const source = eventText(args[1], false) || "unspecified";
+    return `Untrusted source: ${source}`;
+  }
+  if (name === "Block" || name === "Warn" || name === "Approve") {
+    const verb = name === "Block" ? "Blocked" : name === "Warn" ? "Warned" : "Asked for approval";
+    const phase = eventText(args[1], false);
+    const reason = eventText(args[3], false) || eventText(args[2], false);
+    const where = phase ? ` the ${phase}` : "";
+    return reason ? `${verb}${where}: ${reason}` : `${verb}${where}`;
+  }
+  return formatEvent(event, options);
+}
+
+export function enforcerEventLog(trace, options = {}) {
   return recordsInOrder(trace).map((record) => ({
     time: formatClock(record.ts),
     action: String(record.action || ""),
@@ -56,12 +113,77 @@ export function enforcerEventLog(trace) {
         label,
         hint,
         lines: events.filter((event) => event && typeof event === "object").map((event) => ({
-          text: formatEvent(event),
+          text: eventSentence(event, options),
           full: formatEventFull(event),
         })),
       };
     }).filter((group) => group.lines.length),
   })).filter((entry) => entry.groups.length);
+}
+
+// The line an operator should trust: the runtime result, with a late block
+// named in the same sentence as the allow that already happened.
+export function storyLine(account) {
+  const kind = account?.effectiveKind || "allow";
+  const verb = { block: "Blocked", approval: "Needs approval", warn: "Warned", allow: "Allowed" }[kind] || "Allowed";
+  const late = Boolean(account?.blockAfterTool) && kind !== "block";
+  return {
+    headline: late ? `${verb} · blocked too late` : verb,
+    mark: account?.effective || "",
+    late,
+  };
+}
+
+export function turnCaption(turn, detail) {
+  const title = turn?.tool_name || `Turn ${turn?.tid ?? ""}`;
+  if (!detail) {
+    const fired = Array.isArray(turn?.fired_predicates) ? turn.fired_predicates : [];
+    const afterTool = String(turn?.action || "").startsWith("tool_result");
+    const subtitle = afterTool
+      ? "Logged after the tool ran"
+      : fired.length
+        ? fired.slice(0, 2).join(", ")
+        : verdictLabel(turn?.action);
+    return { action: turn?.action || "", title, subtitle };
+  }
+  const account = decisionAccount(detail);
+  const story = storyLine(account);
+  const reason = (account.requested || []).map((verdict) => verdict.reason).find(Boolean) || "";
+  const fired = Array.isArray(turn?.fired_predicates) ? turn.fired_predicates : [];
+  let subtitle = story.headline;
+  if (!story.late && reason) subtitle = reason;
+  else if (!story.late && fired.length) subtitle = fired.slice(0, 2).join(", ");
+  return { action: story.mark || account.effective || turn?.action || "", title, subtitle };
+}
+
+// Keep earlier turns of a session that contains a match, so a temporal block
+// still shows the turn that came before it. Those earlier turns are context.
+export function tracesForFilter(list, filter) {
+  const traces = Array.isArray(list) ? list : [];
+  if (!filter || filter === "all") return { traces, contextTids: [] };
+  const match = (entry) => verdictKind(entry?.action) === filter;
+  const matches = traces.filter(match);
+  const contextTids = [];
+  const kept = [];
+  for (const entry of traces) {
+    if (match(entry)) {
+      kept.push(entry);
+      continue;
+    }
+    const sid = sessionIdOf(entry);
+    if (!sid) continue;
+    const providesContext = matches.some((other) => {
+      if (sessionIdOf(other) !== sid) return false;
+      const earlierTs = Number(entry?.ts || 0) < Number(other?.ts || 0);
+      const sameTimeEarlierId = Number(entry?.ts || 0) === Number(other?.ts || 0) && Number(entry?.tid) < Number(other?.tid);
+      return earlierTs || sameTimeEarlierId;
+    });
+    if (providesContext) {
+      kept.push(entry);
+      contextTids.push(entry.tid);
+    }
+  }
+  return { traces: kept, contextTids };
 }
 
 export function phaseTimingLabel(phase) {
