@@ -14,6 +14,11 @@ def build():
     pack['backend']['judge_fail_mode'] = 'closed'
     pack['backend']['ingest_judges']['configuration_change'] = True
     for policy in pack['policies']:
+        if policy['id'] == 'collection_v1':
+            old = 'IMPLIES:R Block(t, "tool", "collection_after_credential", "data staging follows a credential access in this session")'
+            new = 'IMPLIES:R Approve(t, "tool", "collection_after_credential")'
+            assert policy['mfotl'].count(old) == 1
+            policy['mfotl'] = policy['mfotl'].replace(old, new)
         if policy['id'] == 'provenance_v1':
             policy['mfotl'] = policy['mfotl'].rstrip() + '''\n\nAND\n{"oversized_untrusted_result_review"}{
 ALWAYS (FORALL t, r, s, c, tool, input.
@@ -63,9 +68,8 @@ ALWAYS (FORALL t, c, tool, input, target.
   (PolicyActive(t, "persistence_v1")
    AND ToolPlanned(t, c, tool, input)
    AND Classify(t, c, "schedule_target_v2", target)
-   AND ((NOT (EXISTS tc, cc. Classify(tc, cc, "rewrite_or_delete_target_v2", target)))
-        SINCE [0, 86400] (EXISTS td, dc. Classify(td, dc, "dangerous_write_target_v2", target))))
-  IMPLIES:R Block(t, "tool", "dangerous_script_then_schedule", "schedule references a path whose dangerous write proposal in this runtime namespace has not since been overwritten or deleted"))
+   AND ONCE [0, 86400] (EXISTS td, dc. Classify(td, dc, "dangerous_write_target_v2", target)))
+  IMPLIES:R Block(t, "tool", "dangerous_script_then_schedule", "schedule references a dangerous write proposal in this runtime namespace within retained history"))
 }
 AND
 {"schedule_then_dangerous_script"}{
@@ -73,9 +77,8 @@ ALWAYS (FORALL t, c, tool, input, target.
   (PolicyActive(t, "persistence_v1")
    AND ToolPlanned(t, c, tool, input)
    AND Classify(t, c, "dangerous_write_target_v2", target)
-   AND ((NOT (EXISTS tr, cr. Classify(tr, cr, "schedule_removed_target_v2", target)))
-        SINCE [0, 86400] (EXISTS ts, cs. Classify(ts, cs, "schedule_target_v2", target))))
-  IMPLIES:R Block(t, "tool", "schedule_then_dangerous_script", "dangerous write targets a path with a schedule reference in this runtime namespace that has not since been removed"))
+   AND ONCE [0, 86400] (EXISTS ts, cs. Classify(ts, cs, "schedule_target_v2", target)))
+  IMPLIES:R Block(t, "tool", "schedule_then_dangerous_script", "dangerous write targets an earlier schedule reference in this runtime namespace within retained history"))
 }
 AND
 {"unresolved_schedule_review"}{

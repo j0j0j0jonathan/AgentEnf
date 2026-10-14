@@ -67,7 +67,8 @@ def test_provider_contract_includes_entire_diff(monkeypatch,backend):
 
 @pytest.mark.parametrize('label,expected', [('execution_hook',True),('security_weakening',True),
                                            ('uncertain',True),('benign',False)])
-def test_real_monitor_configuration_review(tmp_path,monkeypatch,label,expected):
+@pytest.mark.parametrize('tool', ['file_write', 'bash'])
+def test_real_monitor_configuration_review(tmp_path,monkeypatch,label,expected,tool):
     binary=Path(os.environ.get('ENFGUARD_BIN',''))
     if not binary.is_file():pytest.skip('Set ENFGUARD_BIN')
     root=Path(__file__).resolve().parents[1]
@@ -75,10 +76,11 @@ def test_real_monitor_configuration_review(tmp_path,monkeypatch,label,expected):
     formula=tmp_path/'config.mfotl'
     formula.write_text(next(p['mfotl'] for p in pack['policies'] if p['id']=='configuration_review_v2'))
     monkeypatch.setattr(review,'_classifier',lambda content:(label,'classified'))
-    facts=review.configuration_events(1,'c','file_write',{'path':'/app/pipeline.yaml','content':'fixture'})
+    args = {'path':'/app/pipeline.yaml','content':'fixture'} if tool == 'file_write' else {'command':"cat > /app/pipeline.yaml <<'EOF'\nfixture\nEOF\n"}
+    facts=review.configuration_events(1,'c',tool,args)
     enforcer=Enforcer(str(binary),str(root/'enfguard.sig'),str(formula));enforcer.start()
     try:
         result=enforcer.query([Event('PolicyActive',1,'configuration_review_v2'),
-            Event('ToolPlanned',1,'c','file_write','fixture'),*facts],1)
+            Event('ToolPlanned',1,'c',tool,'fixture'),*facts],1)
     finally:enforcer.stop()
     assert any(x['name']=='Approve' for x in result.get('cause',[])) is expected

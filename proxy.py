@@ -1161,7 +1161,7 @@ async def tool_execute(request: Request) -> JSONResponse:
             break
     from instrlib.persistence_paths import persistence_path_events
     mapped_tool_events.extend(persistence_path_events(
-        tid, call_id, canonical_tool, tool_input, body.get("runtime_namespace"), mapped_tool_events))
+        tid, call_id, canonical_tool, tool_input, body.get("runtime_namespace"), mapped_tool_events, raw_tool_name=tool_name))
     # The direct agent hook may use a different session id from the proxied LLM
     # response (NanoClaw's chat request can be sessionless while tool hooks use
     # the WhatsApp jid). Persist the canonical proposing tool at the authoritative

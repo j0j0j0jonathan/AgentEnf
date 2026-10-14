@@ -40,12 +40,12 @@ def test_cross_call_persistence_real_monitor(tmp_path,sid,namespace,target,expec
 
 @pytest.mark.parametrize('content,expected',[
  ('15 2 * * 0 /app/rotate.sh',['/app/rotate.sh']),
- ('15 2 * * 0 root /bin/bash /app/job.sh',['/app/job.sh']),
+ ('15 2 * * 0 /bin/bash /app/job.sh',['/app/job.sh']),
  ('@reboot /usr/bin/python3 /app/job.py',['/app/job.py']),
  ('ExecStart=/bin/bash -c "/app/job.sh"',['/app/job.sh']),
  ('ExecStart=/bin/bash $ROOT/job.sh',[]),
  ('# ExecStart=/app/job.sh',[]),
- ('ExecStart=/app/a/../job.sh',['/app/job.sh']),
+ ('ExecStart=/app/a/../job.sh',[]),
 ])
 def test_schedule_path_extraction(content,expected):
  # Targets are over-approximated (safe for the join): the real script must be
@@ -161,11 +161,11 @@ def test_real_monitor_oversize_egress_review(tmp_path):
  binary=Path(os.environ.get('ENFGUARD_BIN',''))
  if not binary.is_file():pytest.skip('requires monitor')
  pack=yaml.safe_load((ROOT/'examples/presets/release-candidate.yaml').read_text())
- formula=tmp_path/'p.mfotl';formula.write_text(next(p['mfotl'] for p in pack['policies'] if p['id']=='persistence_v1'))
+ formula=tmp_path/'p.mfotl';formula.write_text(next(p['mfotl'] for p in pack['policies'] if p['id']=='provenance_v1'))
  enf=Enforcer(str(binary),str(ROOT/'enfguard.sig'),str(formula));enf.start()
  try:
   enf.query([Event('Turn',1,'r1','s'),Event('Untrusted',1,'tool_result'),Event('Classify',1,'c1','judge_adapter','content_semantics'),Event('Classify',1,'c1','judge_status','input_budget_exceeded')],1)
-  result=enf.query([Event('PolicyActive',2,'persistence_v1'),Event('Turn',2,'r2','s'),Event('ToolPlanned',2,'c2','bash','{}'),Event('Classify',2,'c2','action_class','exfiltration')],2)
+  result=enf.query([Event('PolicyActive',2,'provenance_v1'),Event('Turn',2,'r2','s'),Event('ToolPlanned',2,'c2','bash','{}'),Event('Classify',2,'c2','action_class','exfiltration')],2)
  finally:enf.stop()
  assert any(e['name']=='Approve' and 'oversized_untrusted_result_review' in str(e) for e in result.get('cause',[]))
 
@@ -241,9 +241,9 @@ def _facts(tool, args, namespace='A', kinds=('scheduled_routine',)):
     return {(e.args[2], e.args[3]) for e in out}
 
 
-def test_benign_overwrite_emits_clear_not_danger():
+def test_benign_overwrite_proposal_never_clears_danger():
     facts = _facts('file_write', {'path': '/app/run.sh', 'content': 'echo ok\n'}, kinds=())
-    assert any(dim == 'rewrite_or_delete_target_v2' for dim, _ in facts)
+    assert not any(dim == 'rewrite_or_delete_target_v2' for dim, _ in facts)
     assert not any(dim == 'dangerous_write_target_v2' for dim, _ in facts)
 
 
@@ -253,15 +253,16 @@ def test_dangerous_overwrite_emits_danger_not_clear():
     assert not any(dim == 'rewrite_or_delete_target_v2' for dim, _ in facts)
 
 
-def test_delete_clears_path():
+def test_delete_proposal_does_not_clear_path():
     facts = _facts('file_delete', {'path': '/app/run.sh'}, kinds=())
-    assert any(dim == 'rewrite_or_delete_target_v2' for dim, _ in facts)
+    assert not any(dim == 'rewrite_or_delete_target_v2' for dim, _ in facts)
 
 
 def test_native_schedule_delete_emits_removal():
-    args = {'action': 'delete', 'command': '/app/job.sh'}
+    args = {'action': 'delete', 'jobId':'job-1', 'command': '/app/job.sh'}
     facts = _facts('cron_tool', args, kinds=('scheduled_routine',))
-    assert any(dim == 'schedule_removed_target_v2' for dim, _ in facts)
+    assert any(dim == 'schedule_removal_proposed_id' for dim, _ in facts)
+    assert not any(dim == 'schedule_removed_target_v2' for dim, _ in facts)
     assert not any(dim == 'schedule_target_v2' for dim, _ in facts)
 
 

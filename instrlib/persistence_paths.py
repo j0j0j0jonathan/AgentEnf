@@ -1,33 +1,19 @@
-"""Conservative literal schedule parsing. Paths identify proposals, not inodes.
+"""Proposal correlation, not completed-artifact lifecycle or filesystem identity.
 
-Targets are over-approximated: every absolute path a scheduled command references
-is a candidate, because the persistence join only Blocks when one of those paths
-independently carried an *uncleared* dangerous write proposal. Over-matching a
-launcher such as ``/usr/bin/python`` is therefore harmless. Dynamic or opaque
-syntax stays explicit uncertainty (``schedule_target_unresolved``), never a
-silent "no target".
-
-Facts (value is JSON ``[namespace, abspath]``, ASCII-escaped, except the plain
-string reason on ``schedule_target_unresolved``):
-  dangerous_write_target_v2    a write whose body is a dangerous payload
-  rewrite_or_delete_target_v2  a benign overwrite or a delete of a path; the
-                               SINCE lifecycle join treats it as clearing an
-                               earlier dangerous write on that path
-  schedule_target_v2           a path referenced by a written/created schedule
-  schedule_removed_target_v2   a schedule entry explicitly deleted (native tool)
-  schedule_target_unresolved   the schedule could not be read literally
+Only parsed executable/script positions feed hard-block joins. Unsupported syntax
+requires review; unrelated path arguments are not execution targets. Proposals
+never clear history. Completion-attested lifecycle tracking remains future work.
 """
+
 import json
 import posixpath
 import re
-from instrlib.command_risk import _unwrap_shell_c
+import shlex
 from instrlib.event import Event
 
-_ABS_PATH_RE = re.compile(r"(?<![\w:=@])/[A-Za-z0-9._+-][A-Za-z0-9._/+-]*")
-_REL_PATH_RE = re.compile(r"(?<!\S)\.\.?/[A-Za-z0-9._/+-]+")
-_DYNAMIC = ("$", "`", "\n", "\x00")
 _PATH_KEYS = ("path", "file_path", "filename", "file", "filepath")
 _REMOVE_ACTIONS = {"delete", "remove", "unschedule", "disable", "revoke", "unregister"}
+_SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
 
 
 def absolute_path(value):
@@ -35,55 +21,139 @@ def absolute_path(value):
         return None
     if any(c in value for c in ("$", "~", "\\", "\x00", "\n", "`", "*", "?", "[", "%")):
         return None
+    # normpath can collapse symlink-sensitive '..': keep that unresolved.
+    if ".." in value.split("/"):
+        return None
     return "/" + posixpath.normpath(value).lstrip("/")
 
 
-def command_targets(command, _depth=0):
-    """Return (targets, unknown). Over-approximate: every absolute path a command
-    references is a candidate, which is safe because the join only Blocks a path
-    that independently carried a dangerous write. ``unknown`` is True on dynamic
-    or opaque syntax, on a relative script with no resolvable working directory,
-    or when nothing literal was found, so the caller emits an explicit
-    schedule_target_unresolved rather than a false negative.
+def _program(words, cwd, depth):
+    if not words or depth > 6:
+        return set(), True
+    if any(any(c in word for c in ("$", "`", "\x00", "%")) for word in words):
+        return set(), True
+    name = posixpath.basename(words[0])
+    tail = words[1:]
+    if name in _SHELLS and tail and tail[0] in {"-c", "-lc", "-ec", "-xc"}:
+        if len(tail) != 2:
+            return set(), True
+        return command_targets(tail[1], depth + 1, cwd)
+    if name == "env":
+        while tail and (
+            tail[0] in {"-i", "--ignore-environment", "--"}
+            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", tail[0])
+        ):
+            tail = tail[1:]
+        if not tail or tail[0].startswith("-"):
+            return set(), True
+        return _program(tail, cwd, depth + 1)
+    if name == "nohup":
+        if tail and tail[0] == "--":
+            tail = tail[1:]
+        return _program(tail, cwd, depth + 1)
+    if name == "nice":
+        if tail and tail[0] == "-n":
+            if len(tail) < 2 or not re.fullmatch(r"-?\d+", tail[1]):
+                return set(), True
+            tail = tail[2:]
+        elif tail and tail[0].startswith("--adjustment="):
+            tail = tail[1:]
+        if tail and tail[0] == "--":
+            tail = tail[1:]
+        if tail and tail[0].startswith("-"):
+            return set(), True
+        return _program(tail, cwd, depth + 1)
+    if name == "timeout":
+        if tail and tail[0] == "--":
+            tail = tail[1:]
+        if not tail or not re.fullmatch(r"\d+(?:\.\d+)?[smhd]?", tail[0]):
+            return set(), True
+        return _program(tail[1:], cwd, depth + 1)
+    if name == "flock":
+        while tail and tail[0] in {"-n", "--nonblock", "-x", "--exclusive", "-s", "--shared", "--"}:
+            tail = tail[1:]
+        if not tail or not absolute_path(tail[0]):
+            return set(), True
+        return _program(tail[1:], cwd, depth + 1)
+    interpreter = name in _SHELLS | {"node", "ruby", "perl", "php"} or bool(
+        re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", name)
+    )
+    if interpreter:
+        while tail and tail[0] in {"-u", "-B", "-E", "-s", "-S", "-O", "-OO", "-I", "--"}:
+            tail = tail[1:]
+        if not tail or tail[0].startswith("-"):
+            return set(), True
+        candidate = tail[0]
+    else:
+        candidate = words[0]
+    target = absolute_path(candidate)
+    if not target and cwd and candidate.startswith("./"):
+        target = absolute_path(posixpath.join(cwd, candidate))
+    # An unknown launcher might execute an argument. Do not hard-join that
+    # argument, but request review when there are other path-shaped operands.
+    uncertain = not interpreter and any(x.startswith(("/", "./", "../")) for x in tail)
+    return ({target} if target else set()), uncertain or target is None
 
-    A ``sh -c "..."`` wrapper is unwrapped once so the real inner command is read
-    instead of the shell binary. Only a leading ``cd /abs &&`` establishes a
-    working directory for ``./rel`` resolution; a ``||`` or bare ``cd`` leaves the
-    relative target unresolved (uncertain), never invented."""
-    if not isinstance(command, str) or not command.strip():
+
+def command_targets(command, _depth=0, _cwd=None):
+    if not isinstance(command, str) or not command.strip() or _depth > 6:
         return set(), True
-    if any(c in command for c in _DYNAMIC):
+    if any(c in command for c in ("$", "`", "\n", "\x00")):
         return set(), True
-    if _depth < 3:
-        inner = _unwrap_shell_c(command)
-        if inner != command:
-            return command_targets(inner, _depth + 1)
-    cwd = None
-    m = re.match(r"\s*cd\s+(/[^\s;&|]+)\s*&&\s*(.*)", command, re.DOTALL)
-    if m:
-        cwd = absolute_path(m.group(1))
-    targets = set()
-    for raw in _ABS_PATH_RE.findall(command):
-        resolved = absolute_path(raw)
-        if resolved:
-            targets.add(resolved)
+    try:
+        lex = shlex.shlex(command, posix=True, punctuation_chars=";&|<>")
+        lex.whitespace_split = True
+        tokens = list(lex)
+    except ValueError:
+        return set(), True
+    segments = []
+    words = []
+    i = 0
     unknown = False
-    for rel in _REL_PATH_RE.findall(command):
-        resolved = absolute_path(posixpath.join(cwd, rel)) if cwd else None
-        if resolved:
-            targets.add(resolved)
-        else:
-            unknown = True  # a relative script we cannot pin to a directory
-    return targets, unknown or not targets
+    while i < len(tokens):
+        token = tokens[i]
+        if token in {";", "&&", "||", "|", "&"}:
+            segments.append((words, token))
+            words = []
+            i += 1
+            continue
+        if token and set(token) <= set("<>&") and ("<" in token or ">" in token):
+            if words and words[-1].isdigit():
+                words.pop()
+            if token not in {">", ">>", "<", ">&", "<&", "&>"} or i + 1 >= len(tokens):
+                unknown = True
+            i += 2
+            continue
+        words.append(token)
+        i += 1
+    segments.append((words, None))
+    cwd = _cwd
+    targets = set()
+    for words, separator in segments:
+        if not words:
+            unknown = True
+            continue
+        if words[0] == "cd":
+            if len(words) == 2 and separator == "&&" and absolute_path(words[1]):
+                cwd = absolute_path(words[1])
+            else:
+                cwd = None
+                unknown = True
+            continue
+        found, miss = _program(words, cwd, _depth)
+        targets |= found
+        unknown |= miss
+        if separator in {"|", "&", "||"}:
+            cwd = None
+    return targets, unknown
 
 
 def command_target(command):
     targets, _ = command_targets(command)
-    return sorted(targets)[0] if len(targets) == 1 else None
+    return next(iter(targets)) if len(targets) == 1 else None
 
 
 def schedule_analysis(content, system_crontab=False):
-    """Parse cron/systemd scheduler text. Returns (sorted targets, unknown)."""
     targets = set()
     unknown = False
     saw = False
@@ -91,37 +161,56 @@ def schedule_analysis(content, system_crontab=False):
         line = line.strip()
         if not line or line.startswith(("#", ";", "[")):
             continue
-        m = re.match(
-            r"Exec(?:Start|StartPre|StartPost|Reload|Stop|StopPost|Condition)\s*=\s*(.*)",
-            line,
+        match = re.match(
+            r"Exec(?:Start|StartPre|StartPost|Reload|Stop|StopPost|Condition)\s*=\s*(.*)", line
         )
-        if m:
+        if match:
             saw = True
-            command = m.group(1)
+            command = match[1]
             prefix = re.match(r"^[-+!@:]+", command)
             if prefix:
-                command = command[prefix.end():]
-        elif "=" in line.split()[0]:
-            continue  # an unrelated ini/unit key, not a scheduled command
-        else:
-            fields = line.split()
-            if fields and fields[0].startswith("@"):
-                rest = fields[1:]
-            elif len(fields) >= 6 and all(
-                re.fullmatch(r"[0-9A-Za-z*,/\-]+", f) for f in fields[:5]
-            ):
-                rest = fields[5:]
-            else:
+                if "@" in prefix[0]:
+                    # Custom argv[0] changes interpreter argument semantics.
+                    try:
+                        executable = shlex.split(command[prefix.end() :])[0]
+                    except (ValueError, IndexError):
+                        executable = ""
+                    target = absolute_path(executable)
+                    if target:
+                        targets.add(target)
+                    unknown = True
+                    continue
+                command = command[prefix.end() :]
+            # systemd does not apply shell operators unless explicitly using sh -c.
+            try:
+                parts = shlex.split(command)
+            except ValueError:
                 unknown = True
                 continue
+            found, miss = _program(parts, None, 0)
+        elif "=" in line.split()[0]:
+            continue
+        else:
+            # Preserve quotes in the command instead of split/join token rewriting.
+            if line.startswith("@"):
+                parts = line.split(None, 1)
+                command = parts[1] if len(parts) == 2 else ""
+            else:
+                parts = line.split(None, 5)
+                if len(parts) < 6 or not all(
+                    re.fullmatch(r"[0-9A-Za-z*,/\-]+", f) for f in parts[:5]
+                ):
+                    unknown = True
+                    continue
+                command = parts[5]
+            if system_crontab:
+                parts = command.split(None, 1)
+                if len(parts) < 2:
+                    unknown = True
+                    continue
+                command = parts[1]
             saw = True
-            # Only /etc/crontab and /etc/cron.d/* carry a leading user column.
-            # A user crontab or systemd unit has none, so stripping there would
-            # drop the real command's first token.
-            if system_crontab and rest and re.fullmatch(r"[a-z_][a-z0-9_-]*", rest[0]):
-                rest = rest[1:]
-            command = " ".join(rest)
-        found, miss = command_targets(command)
+            found, miss = command_targets(command)
         targets |= found
         unknown |= miss
     return sorted(targets), unknown or not saw
@@ -136,9 +225,7 @@ def _is_system_crontab(path):
 
 
 def _arg_path(args):
-    return next(
-        (args[k] for k in _PATH_KEYS if isinstance(args.get(k), str) and args[k]), ""
-    )
+    return next((args[k] for k in _PATH_KEYS if isinstance(args.get(k), str) and args[k]), "")
 
 
 def _dangerous(content):
@@ -151,8 +238,11 @@ def _dangerous(content):
     classify as critical and match.
     """
     from instrlib.tool_mapper import (
-        _dangerous_written_content, authored_exfil_dataflow, _AUTHORED_SEND_RE,
+        _dangerous_written_content,
+        authored_exfil_dataflow,
+        _AUTHORED_SEND_RE,
     )
+
     if _dangerous_written_content(content, scoped_delete_is_dangerous=False):
         return True
     if authored_exfil_dataflow(content):
@@ -164,9 +254,18 @@ def _dangerous(content):
     return bool(literal_credential_read and _AUTHORED_SEND_RE.search(content))
 
 
-def persistence_path_events(tid, call_id, canonical_tool, args, namespace, mapped):
+def persistence_path_events(
+    tid, call_id, canonical_tool, args, namespace, mapped, raw_tool_name=None
+):
     def fact(dimension, value):
         return Event("Classify", tid, call_id, dimension, value)
+
+    valid_ns = isinstance(namespace, str) and bool(namespace) and len(namespace) <= 256
+
+    def pathfact(dimension, path):
+        return fact(
+            dimension, json.dumps([namespace, path], ensure_ascii=True, separators=(",", ":"))
+        )
 
     kinds = {
         e.args[3]
@@ -174,80 +273,57 @@ def persistence_path_events(tid, call_id, canonical_tool, args, namespace, mappe
         if e.name == "Classify" and len(e.args) >= 4 and e.args[2] == "persistence_kind"
     }
     scheduling = bool(kinds & {"service", "scheduled_task", "scheduled_routine"})
-    valid_ns = isinstance(namespace, str) and bool(namespace) and len(namespace) <= 256
-
+    native = bool(re.search(r"cron|schedul", raw_tool_name or canonical_tool, re.I))
+    action = str(args.get("action") or args.get("operation") or args.get("op") or "").lower()
+    if native and action in _REMOVE_ACTIONS:
+        # Report job identity only. A requested removal is NOT a completed revoke;
+        # it cannot clear references belonging to this job or another job.
+        job_id = args.get("jobId") or args.get("job_id") or args.get("id")
+        if valid_ns and isinstance(job_id, str) and job_id:
+            return [
+                fact(
+                    "schedule_removal_proposed_id",
+                    json.dumps([namespace, job_id], ensure_ascii=True, separators=(",", ":")),
+                )
+            ]
+        return [fact("schedule_removal_status", "unresolved_identity")]
     if scheduling and not valid_ns:
         return [fact("schedule_target_unresolved", "missing_runtime_namespace")]
-
-    def pathfact(dimension, path):
-        return fact(
-            dimension,
-            json.dumps([namespace, path], ensure_ascii=True, separators=(",", ":")),
-        )
-
     events = []
-
     if canonical_tool == "file_write":
         path = absolute_path(_arg_path(args))
         content = args.get("content")
-        if path and valid_ns and isinstance(content, str):
-            # A write is EITHER a dangerous proposal OR a lifecycle clear, never
-            # both: the file's latest write decides its state for the SINCE join,
-            # so a benign overwrite of a formerly dangerous script clears it.
-            if _dangerous(content):
-                events.append(pathfact("dangerous_write_target_v2", path))
-            else:
-                events.append(pathfact("rewrite_or_delete_target_v2", path))
-        if scheduling and valid_ns:
-            targets, unknown = schedule_analysis(
-                content if isinstance(content, str) else "", _is_system_crontab(path)
+        if path and valid_ns and isinstance(content, str) and _dangerous(content):
+            events.append(pathfact("dangerous_write_target_v2", path))
+        if scheduling:
+            targets, unknown = (
+                schedule_analysis(content, _is_system_crontab(path))
+                if isinstance(content, str)
+                else ([], True)
             )
             events.extend(pathfact("schedule_target_v2", target) for target in targets)
             if unknown:
-                events.append(
-                    fact("schedule_target_unresolved", "unsupported_or_partial_command")
-                )
-
-    elif canonical_tool == "file_delete":
-        path = absolute_path(_arg_path(args))
-        if path and valid_ns:
-            # Deleting the script clears a prior dangerous write proposal on it.
-            events.append(pathfact("rewrite_or_delete_target_v2", path))
-
-    elif scheduling and valid_ns:
-        # Native scheduling tools carry explicit command fields, never agent
-        # prose, so only literal command strings are parsed. A delete/remove
-        # action clears the matching schedule reference for the lifecycle join.
+                events.append(fact("schedule_target_unresolved", "unsupported_or_partial_command"))
+    elif scheduling:
         commands = []
-        removals = []
 
-        def collect(obj, removing=False):
+        def collect(obj):
             if isinstance(obj, dict):
-                action = str(
-                    obj.get("action") or obj.get("operation") or obj.get("op") or ""
-                ).strip().lower()
-                removing = removing or action in _REMOVE_ACTIONS
                 for key, value in obj.items():
                     if key in {"command", "cmd"} and isinstance(value, str):
-                        (removals if removing else commands).append(value)
+                        commands.append(value)
                     elif isinstance(value, (dict, list)):
-                        collect(value, removing)
+                        collect(value)
             elif isinstance(obj, list):
                 for item in obj:
-                    collect(item, removing)
+                    collect(item)
 
         collect(args)
-        unknown = not (commands or removals)
+        unknown = not commands
         for command in commands:
             targets, miss = command_targets(command)
             unknown |= miss
-            events.extend(pathfact("schedule_target_v2", t) for t in sorted(targets))
-        for command in removals:
-            targets, _ = command_targets(command)
-            events.extend(pathfact("schedule_removed_target_v2", t) for t in sorted(targets))
+            events.extend(pathfact("schedule_target_v2", target) for target in sorted(targets))
         if unknown:
-            events.append(
-                fact("schedule_target_unresolved", "native_payload_not_literal_command")
-            )
-
+            events.append(fact("schedule_target_unresolved", "native_payload_not_literal_command"))
     return events
