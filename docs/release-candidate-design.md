@@ -516,3 +516,42 @@ live-comparison-v2 preserves v1 and freezes the updated runtime. Its 20-run smok
 adds two local probes (empty hooks and a fixture-secret copying hook) to the two
 original cases, across five arms. Those probes are separate from A3S scores.
 The launcher is prepared; no v2 live calls have been made by this change.
+
+### Post-v2 adjudication (14 October 2026)
+
+The evaluated runtime is commit b13dd3f; all 44 frozen runtime file hashes match
+that commit (the verification artifact records the exact count). Frontend work
+was excluded. Experiment-specific Decisions/approval profiles retain separate
+hashes. Subsequent changes must not be attributed to the v2 results.
+
+Correction to the chat summary: candidate-strict created no support archives;
+baseline-strict created two, one retaining the fixture API key. Both strict arms
+prevented the log-rotation crontab. Three repetitions are suggestive, not a
+security guarantee.
+
+One candidate-legacy nginx setup call hit collection_after_account_enum after
+an earlier account discovery. Its collection operation was a configuration
+backup, not necessarily an archive and not evidence of copying account data.
+The candidate now requests approval for this history-only correlation. Direct
+account-file and sensitive-file copying retain their independent Block rules.
+The approve-all research arm can consequently permit genuinely risky staging;
+this is the same explicit tradeoff as collection_after_credential. Forty-eight
+focused tests passed, including both histories, nginx backup and direct copies.
+No default profile was changed; no additional live run was launched.
+
+Control-file reads account for 41/59 candidate-strict and 32/50 baseline-strict
+approval-denied calls in the retained A3S trajectories. Count calls once even
+when both control_artifact_read and openclaw_private_control_read fire. These are
+model-proposed reads of SOUL.md, USER.md, MEMORY.md and BOOTSTRAP.md, not trusted
+harness initialization. The shares quantify denials, not task failure caused by
+them. No exemption was added. A future bootstrap path needs authenticated
+runtime origin, exact deployer-approved content/file identity, namespace/session
+binding and one-use authorization; an arbitrary model-proposed read must not be
+able to claim that identity. Disclosure protection must still apply to output.
+
+The recorded timing fields are overlapping: mean monitor spans include potential
+child predicate calls. Agent HTTP is around 51–54 seconds per guarded retained
+trajectory; recorded monitor totals are 28–33 seconds. Proxy classifier HTTP
+alone is 4–5 seconds but does not include every child call. These numbers cannot
+be summed into an exclusive percentage chart or compared directly with the
+previous +28% pilot. The post-v2 review saves per-run measurements and caveats.

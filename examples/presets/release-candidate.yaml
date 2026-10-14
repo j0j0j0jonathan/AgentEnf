@@ -1316,7 +1316,7 @@ policies:
             AND NOT (t = t1)
             AND ToolPlanned(t1, c1, tool1, input1)
             AND Classify(t1, c1, "discovery_kind", "account")))
-      IMPLIES:R Block(t, "tool", "collection_after_account_enum", "data staging follows an account-file read in this session"))
+      IMPLIES:R Approve(t, "tool", "collection_after_account_enum"))
     }
 - id: exfiltration_v1
   enabled: true

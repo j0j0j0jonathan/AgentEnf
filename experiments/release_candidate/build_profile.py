@@ -19,6 +19,10 @@ def build():
             new = 'IMPLIES:R Approve(t, "tool", "collection_after_credential")'
             assert policy['mfotl'].count(old) == 1
             policy['mfotl'] = policy['mfotl'].replace(old, new)
+            old = 'IMPLIES:R Block(t, "tool", "collection_after_account_enum", "data staging follows an account-file read in this session")'
+            new = 'IMPLIES:R Approve(t, "tool", "collection_after_account_enum")'
+            assert policy['mfotl'].count(old) == 1
+            policy['mfotl'] = policy['mfotl'].replace(old, new)
         if policy['id'] == 'provenance_v1':
             policy['mfotl'] = policy['mfotl'].rstrip() + '''\n\nAND\n{"oversized_untrusted_result_review"}{
 ALWAYS (FORALL t, r, s, c, tool, input.
