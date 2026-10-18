@@ -727,7 +727,7 @@ def is_credential_search_command(command: str) -> bool:
     """
     if not command:
         return False
-    command = _deobfuscate(command)
+    command = _deobfuscate(_mask_literal_search_patterns(command))
     scanned = _NEGATION_CLAUSE_RE.sub(" ", command)
     scanned = _TEMPLATE_TOKEN_RE.sub(" ", scanned)  # placeholders are not secrets
     scanned = _mask_quoted_audit_literals(scanned)
@@ -2914,17 +2914,29 @@ def _trashes_declared_workspace_root(command: str) -> bool:
 def _mask_literal_search_patterns(command: str) -> str:
     """Remove quoted search patterns, but retain shell expansions inside them."""
     pattern = re.compile(
-        r"\b(?:grep|egrep|fgrep|rg|ag|ack)\b(?:[ \t]+--?[\w-]+)*[ \t]+"
-        r"(?P<q>['\"])(?P<pattern>.*?)(?P=q)", re.DOTALL
+        r"\b(?:grep|egrep|fgrep|rg|ag|ack)\b(?:[ \t]+--?[\w-]+(?:=[^\s;|&<>\'\"]+)?)*[ \t]+"
+        r"(?:(?P<q>['\"])(?P<pattern>.*?)(?P=q)|(?P<bare>[^\s;|&<>\'\"]+))", re.DOTALL
     )
 
     def replace(match):
-        value = match.group("pattern")
-        if match.group("q") == '"' and ("$" in value or "`" in value):
+        group = "pattern" if match.group("q") else "bare"
+        value = match.group(group)
+        options = match.group(0)[:match.start(group) - match.start()]
+        # -f/--file consumes a pattern FILE, which the process actually reads.
+        if re.search(r"(?:^|\s)(?:--file|-[A-Za-z]*f)(?:\s|$)", options):
             return match.group(0)
-        start, end = match.span("pattern")
+        # Keep bare credential-keyword sweeps for the existing root-scope check.
+        # Filename literals such as authorized_keys are still only pattern data.
+        if group == "bare" and _SEARCH_SECRET_RE.search(value) and not _SEARCH_SECRET_FILE_RE.search(value):
+            return match.group(0)
+        # Literal secret-value harvesting remains security-relevant.
+        if _AKIA_LITERAL_RE.search(value) or _PEM_HEADER_LITERAL_RE.search(value):
+            return match.group(0)
+        if match.group("q") != "'" and ("$" in value or "`" in value):
+            return match.group(0)
+        start, end = match.span(group)
         offset = match.start()
-        return match.group(0)[:start - offset] + " " * (end - start) + match.group(0)[end - offset:]
+        return match.group(0)[:start - offset] + (" " * (end - start) if match.group("q") else "SEARCH_PATTERN") + match.group(0)[end - offset:]
 
     return pattern.sub(replace, command)
 
@@ -3080,7 +3092,7 @@ def is_file_delete_command(command: str) -> bool:
     """Return whether the command performs deletion rather than printing it."""
     if not command:
         return False
-    command = _deobfuscate(command)
+    command = _deobfuscate(_mask_literal_search_patterns(command))
     if _is_command_preview(command) or _is_pattern_search_command(command):
         return False
     # A confined build/cache cleanup is not a gated file delete (would otherwise
@@ -3264,7 +3276,7 @@ def is_reverse_shell(command: str) -> bool:
     """
     if not command:
         return False
-    command = _deobfuscate(command)
+    command = _deobfuscate(_mask_literal_search_patterns(command))
     if _is_pattern_search_command(command):
         return False
     if is_loopback_connection_probe(command):
@@ -5501,6 +5513,60 @@ _GLOB_CRED_RE = re.compile(
 )
 
 
+def _search_reads_credential_input(command: str) -> bool:
+    """Bind a credential filename to a search reader's input, not another command."""
+    try:
+        lex = shlex.shlex(command, posix=True, punctuation_chars=";|&<>()\n")
+        lex.whitespace = " \t\r"
+        lex.whitespace_split = True
+        tokens = list(lex)
+    except ValueError:
+        return False
+    readers = {"grep", "egrep", "fgrep", "rg", "ag", "ack"}
+    boundaries = {";", "|", "||", "&", "&&", "\n", "(", ")", "then", "do", "else"}
+    for i, token in enumerate(tokens):
+        if token.rsplit("/", 1)[-1] not in readers:
+            continue
+        if i and tokens[i - 1] not in boundaries | {"if", "!", "sudo", "command"}:
+            continue
+        pattern_seen = False
+        expect = None
+        options = True
+        for arg in tokens[i + 1:]:
+            if arg in boundaries or (arg and all(c in ";|&<>()\n" for c in arg)):
+                break
+            if expect:
+                if expect == "file" and _SEARCH_SECRET_FILE_RE.search(arg):
+                    return True
+                if expect in {"file", "pattern"}:
+                    pattern_seen = True
+                expect = None
+                continue
+            if options and arg == "--":
+                options = False
+                continue
+            if options and arg.startswith("-"):
+                if arg in {"--file", "-f"} or re.fullmatch(r"-[A-Za-z]*f", arg):
+                    expect = "file"
+                elif arg in {"--regexp", "-e"} or re.fullmatch(r"-[A-Za-z]*e", arg):
+                    expect = "pattern"
+                elif arg.startswith("--file="):
+                    if _SEARCH_SECRET_FILE_RE.search(arg.split("=", 1)[1]):
+                        return True
+                    pattern_seen = True
+                elif arg.startswith("--regexp="):
+                    pattern_seen = True
+                elif arg in {"--include", "--exclude", "--exclude-dir", "-g", "--glob", "-m", "--max-count", "-A", "-B", "-C"}:
+                    expect = "option"
+                continue
+            if not pattern_seen:
+                pattern_seen = True
+                continue
+            if _SEARCH_SECRET_FILE_RE.search(arg):
+                return True
+    return False
+
+
 def is_credential_file_read_command(command: str) -> bool:
     """True if a bash command reads a single credential-looking file (not a sweep).
 
@@ -5510,7 +5576,7 @@ def is_credential_file_read_command(command: str) -> bool:
     """
     if not command or is_credential_search_command(command):
         return False
-    command = _deobfuscate(command)
+    command = _deobfuscate(_mask_literal_search_patterns(command))
     scanned = _NEGATION_CLAUSE_RE.sub(" ", command)
     scanned = _TEMPLATE_TOKEN_RE.sub(" ", scanned)  # placeholders are not secrets
     # SSH client configuration and known-host metadata reveal topology but do
@@ -5518,7 +5584,9 @@ def is_credential_file_read_command(command: str) -> bool:
     # Access. Private keys and authorized_keys remain credential-sensitive.
     scanned = _SSH_METADATA_PATH_RE.sub(" ", scanned)
     secret = _SEARCH_SECRET_RE.search(scanned) or _GLOB_CRED_RE.search(scanned)
+    # After masking content patterns, named search inputs are file reads too.
     return bool((_READ_VERB_RE.search(scanned) and secret)
+                or _search_reads_credential_input(scanned)
                 or _shell_reads_credential_file(scanned))
 
 
@@ -8299,7 +8367,7 @@ def classify_exfil_command(command: str) -> Optional[str]:
     """
     if not command:
         return None
-    command = _deobfuscate(command)
+    command = _deobfuscate(_mask_literal_search_patterns(command))
     if _is_command_preview(command) or _is_pattern_search_command(command):
         return None
     # Push of local content to an external git remote = egress.

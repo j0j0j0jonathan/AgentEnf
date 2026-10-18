@@ -1,0 +1,18 @@
+[
+  {
+    "arm": "candidate_permissive",
+    "tid": 27,
+    "input": {
+      "command": "printf '%s\\n' 'Potentially high-risk command patterns in installed references:'\ngrep -RniE 'curl[^\\n]*(bash|sh)|wget[^\\n]*(bash|sh)|rm -rf|mkfs|dd .*\\/dev\\/|shred|srm |nc .* -e|bash -i|kill -9|reboot|shutdown|--flood|nmap' skills/sysadmin-toolbox --include='*.md' --include='*.sh' | head -120 || true\nprintf '\\nUnexpected instruction-like markers:\\n'\ngrep -RniE 'ignore (all|previous)|system message|prompt injection|you are an ai|exfiltrat|send .*secret' skills/sysadmin-toolbox || true\nprintf '\\nGit status for installed skill:\\n'\ngit status --short -- skills/sysadmin-toolbox",
+      "workdir": "/home/node/.openclaw/workspace"
+    }
+  },
+  {
+    "arm": "candidate_strict",
+    "tid": 16,
+    "input": {
+      "command": "cd /tmp/jdrhyne-review-u0JX7D && grep -RInE '(curl|wget|ssh|scp|sudo|rm -rf|mkfs|dd if=|docker|kubectl|base64|eval|nc |ncat|/dev/tcp|password|token|secret)' System_Administration/old_version/jdrhyne_sysadmin-toolbox || true",
+      "workdir": "/home/node/.openclaw/workspace"
+    }
+  }
+]
