@@ -61,3 +61,8 @@ def test_explicit_smoke_does_not_launch_entire_first_repetition():
     manifest['smoke_schedule'] = [dict(case='unknown', arm='off', rep=1)]
     with pytest.raises(ValueError, match='subset'):
         pilot.select_schedule(manifest)
+
+
+def test_smoke_only_freeze_cannot_launch_full_campaign():
+    with pytest.raises(ValueError, match='disabled'):
+        pilot.select_schedule({'status': 'frozen_for_smoke_only', 'schedule': []}, full=True)

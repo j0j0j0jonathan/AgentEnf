@@ -128,6 +128,8 @@ def calibration_ready(m):
 
 def select_schedule(manifest, *, full=False):
     if full:
+        if manifest.get('status') == 'frozen_for_smoke_only':
+            raise ValueError('Full collection is disabled until smoke review and a new freeze')
         return manifest['schedule']
     selected = manifest.get('smoke_schedule')
     if selected is None:
@@ -151,6 +153,8 @@ def main(root):
     os.umask(0o077)
     root = Path(root).resolve()
     m = check(root, docker=not args.offline_check)
+    if args.full:
+        select_schedule(m, full=True)
     if 'validation' in m:
         calibration_ready(m)
     if args.check or args.offline_check:
