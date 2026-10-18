@@ -42,7 +42,7 @@ def prepare(source, destination):
         arms.append(dict(name=name, profile=path.name, approval_mode=mode,
                          sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
     rng = random.Random(20261018)
-    order = [(c['id'], rep) for c in cases for rep in range(1, 4 if c['label'] == 'attack' else 2)]
+    order = [(c['id'], rep) for c in cases for rep in range(1, 4 if c['label'] == 'attack' else 3)]
     rng.shuffle(order)
     schedule = []
     for case, rep in order:
@@ -50,7 +50,7 @@ def prepare(source, destination):
         rng.shuffle(arm_order)
         schedule.extend(dict(case=case, rep=rep, arm=arm) for arm in arm_order)
     manifest = dict(status='design_prepared_not_frozen_not_runnable', cases=cases, arms=arms,
-        schedule=schedule, full_trajectories=len(schedule), repetitions_by_label={'attack': 3, 'benign': 1},
+        schedule=schedule, full_trajectories=len(schedule), repetitions_by_label={'attack': 3, 'benign': 2},
         agent_model='gpt-5.6-luna', classifier_model='gpt-6-luna', official_judge_model='gpt-5.6-luna',
         monitor=old['monitor'], reference_image=old['reference_image'], resource_caps=old['resource_caps'],
         startup_guidance='Unchanged across all three arms', randomization_seed=20261018,
@@ -65,7 +65,7 @@ def prepare(source, destination):
         limitations=['Previously tuned development cases, not held-out.',
                      'Strict and permissive bracket unattended approval handling, not human decisions.',
                      'Do not reuse old OFF trajectories for the matched comparison.'])
-    assert len(schedule) == 1797
+    assert len(schedule) == 2244
     (destination/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     return manifest
 
