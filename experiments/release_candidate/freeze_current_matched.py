@@ -25,7 +25,7 @@ def dump(path, data):
     path.write_text(json.dumps(data, indent=2)+'\n')
 
 
-def freeze(design, reference, output, reply_replay, property_replay):
+def freeze(design, reference, output, reply_replay, property_replay, smoke_ids=None):
     design, reference, output, reply_replay, property_replay = map(Path,
         (design, reference, output, reply_replay, property_replay))
     if subprocess.check_output(['git', 'diff', 'HEAD', '--name-only'], cwd=ROOT).strip():
@@ -72,12 +72,12 @@ def freeze(design, reference, output, reply_replay, property_replay):
     m.update(status='frozen_for_smoke_only', repository_head=commit,
              classifier_backend='openai_decisions',
              validation={'directory':'validation','manifest_sha256':sha(output/'validation/manifest.json')})
-    smoke_ids={'seed-0311','syn-0718','seed-0051','syn-0126','seed-0006','syn-0014',
+    smoke_ids=set(smoke_ids) if smoke_ids is not None else {'seed-0311','syn-0718','seed-0051','syn-0126','seed-0006','syn-0014',
                'seed-0186','seed-0457','seed-0072','seed-0105'}
     assert smoke_ids <= {c['id'] for c in m['cases']}
     m['smoke_schedule']=[r for r in m['schedule'] if r['rep']==1 and r['case'] in smoke_ids]
-    assert len(m['smoke_schedule'])==30
-    m['smoke_trajectories']=30
+    assert smoke_ids and len(m['smoke_schedule']) == len(smoke_ids) * len(m['arms'])
+    m['smoke_trajectories']=len(m['smoke_schedule'])
     m['full_run_gate']='Review all smoke outcomes, runtime approvals, failures and evidence before full collection.'
     dump(output/'manifest.json',m)
     dump(output/'retained-runner-provenance.json',{'reference':str(reference.resolve()),'source_hashes':copied})
@@ -94,5 +94,6 @@ def freeze(design, reference, output, reply_replay, property_replay):
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('design',type=Path);p.add_argument('reference',type=Path)
     p.add_argument('output',type=Path);p.add_argument('reply_replay',type=Path);p.add_argument('property_replay',type=Path)
-    a=p.parse_args();m=freeze(a.design,a.reference,a.output,a.reply_replay,a.property_replay)
+    p.add_argument('--smoke-case', action='append', help='Restrict confirmation to these case IDs, all arms.')
+    a=p.parse_args();m=freeze(a.design,a.reference,a.output,a.reply_replay,a.property_replay,a.smoke_case)
     print('Frozen',m['smoke_trajectories'],'smoke trajectories; no live runs launched.')
