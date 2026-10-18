@@ -3327,16 +3327,30 @@ def is_remote_payload_exec(command: str) -> bool:
 # explicit. A generic/deep decoder chain without this assignment stays on the
 # uncertain-action judge path.
 _LOCAL_EXEC_RE = re.compile(
-    r"\b(?:gcc|g\+\+|cc|clang)\b[^\n]*\s-o\s+/tmp/"      # compile an artifact into /tmp
-    # chmod +x a file in an untrusted STAGING area then execute it in the same
-    # command (`chmod +x /fixtures/diag.sh && /fixtures/diag.sh`), the
-    # upload-then-run untrusted-execution shape. Restricted to staging dirs so a
-    # legitimate `chmod +x ./build.sh && ./build.sh` in the workspace is not
-    # flagged.
-    r"|\bchmod\s+\+x\b[^\n]*(?:/tmp/|/var/tmp/|/dev/shm/|/fixtures/)\S*[^\n]*&&"
-    r"|\bchmod\s+\+x\b[^\n]*&&[^\n]*(?:/tmp/|/var/tmp/|/dev/shm/|/fixtures/)\S",
+    r"\b(?:gcc|g\+\+|cc|clang)\b[^\n]*\s-o\s+/tmp/",
     re.IGNORECASE,
 )
+
+
+def _chmod_then_exec(command: str) -> bool:
+    """A mode change is not execution; require the changed staging path to run."""
+    match = _CHMOD_EXEC_PATH_RE.search(command)
+    if not match:
+        return False
+    path = match.group("path").strip("'\"")
+    if not path.startswith(("/tmp/", "/var/tmp/", "/dev/shm/", "/fixtures/")):
+        return False
+    # Inspect later simple commands. Processor operands and syntax-only checks
+    # must not count. Wrappers are bounded to common literal invocation forms.
+    tail = command[match.end():]
+    invocation = re.compile(
+        r"(?:&&|;|\n)\s*" + _DL_EXEC_PREFIX
+        + r"(?:[A-Za-z_]\w*=\S+\s+)*"
+        + r"(?:(?:bash|sh|dash|zsh|ksh|python[23]?|node|perl|ruby)\s+)?"
+        + r"[\"']?" + re.escape(path) + r"[\"']?(?=\s|[;&|]|$)"
+    )
+    return bool(invocation.search(tail))
+
 
 _RUNTIME_ENCODED_EXEC_RE = re.compile(
     r"\b(?P<encoded_var>[A-Za-z_]\w*)\s*=\s*\$\([^\n]*"
@@ -3426,7 +3440,7 @@ def classify_execution_kind(text: str) -> Optional[str]:
         # Untrusted local execution: compile-to-/tmp, run a /tmp script/binary, or
         # chmod +x then run from a staging dir. Treated as remote_payload-tier
         # untrusted execution (no fetch in the command).
-        if _LOCAL_EXEC_RE.search(cand):
+        if _LOCAL_EXEC_RE.search(cand) or _chmod_then_exec(cand):
             return "untrusted_exec"
         # Detached/background daemon (F3): nohup/setsid/disown/--daemon launching a
         # process. Checked last so a more specific exec shape above wins (e.g. a

@@ -648,7 +648,7 @@ policies:
        AND ToolPlanned(t, call_id, tool, input)
        AND Classify(t, call_id, "action_class", "execution")
        AND Classify(t, call_id, "execution_kind", "background_daemon"))
-      IMPLIES:R Approve(t, "tool", "background_daemon"))
+      IMPLIES:R Warn(t, "tool", "background_daemon", "background launch observed; scheduling and dangerous effects remain separately guarded"))
     }
 
     AND

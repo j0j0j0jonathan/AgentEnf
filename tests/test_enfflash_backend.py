@@ -239,7 +239,7 @@ def test_embedded_python_sees_launching_venv_dependencies(tmp_path, monkeypatch)
         monitor.stop()
 
 
-def test_native_background_launch_requests_approval(tmp_path):
+def test_native_background_launch_warns(tmp_path):
     import yaml
     from instrlib.tool_mapper import map_tool_call
     from experiments.release_candidate.build_optimized import clauses
@@ -257,7 +257,7 @@ def test_native_background_launch_requests_approval(tmp_path):
         call = next(e for e in events if e.name == 'ToolCall')
         result = monitor.query([Event('PolicyActive', 1, 'execution_v2'),
                                 Event('ToolPlanned', *call.args), *events], 1)
-        assert any(e['name'] == 'Approve' and e['args'][2] == 'background_daemon'
+        assert any(e['name'] == 'Warn' and e['args'][2] == 'background_daemon'
                    for e in result.get('cause', []))
     finally:
         monitor.stop()
