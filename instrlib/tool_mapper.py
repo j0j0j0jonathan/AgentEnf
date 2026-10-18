@@ -2990,7 +2990,10 @@ def classify_impact_kind(command: str) -> Optional[str]:
     """
     if not command:
         return None
-    command = _deobfuscate(_mask_literal_search_patterns(command))
+    command = _mask_literal_search_patterns(command)
+    # Capture before deobfuscation: echo-substitution folding can hide redirects.
+    substitutions = _persistence_substitution_bodies(command)
+    command = _deobfuscate(command) + "\n" + "\n".join(substitutions)
     if _is_command_preview(command):
         return None
     # A pure search/filter pipeline (grep/rg/egrep for a pattern, optionally piped
@@ -3882,8 +3885,58 @@ def _persistence_is_copy_read_only(command: str) -> bool:
     return src_hit and not dest_hit
 
 
+def _persistence_substitution_bodies(command: str) -> list[str]:
+    """Expose executable substitutions, including those inside double quotes.
+
+    This is a lexical aid, not a shell interpreter. Single-quoted and escaped
+    substitution markers remain data. Nested $() bodies are traversed too.
+    """
+    bodies = []
+
+    def scan(start: int, terminator: str = "") -> int:
+        i, quote, depth = start, "", 0
+        while i < len(command):
+            ch = command[i]
+            if quote == "'":
+                if ch == "'":
+                    quote = ""
+                i += 1
+                continue
+            if ch == "\\":
+                i += 2
+                continue
+            if not quote and terminator and ch == terminator and depth == 0:
+                return i
+            if command.startswith("$(", i):
+                end = scan(i + 2, ")")
+                bodies.append(command[i + 2:end])
+                i = end + 1
+                continue
+            if ch == "`":
+                end = scan(i + 1, "`")
+                bodies.append(command[i + 1:end])
+                i = end + 1
+                continue
+            if ch == '"':
+                quote = "" if quote == '"' else '"'
+            elif not quote and ch == "'":
+                quote = "'"
+            elif not quote and terminator == ")":
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+            i += 1
+        return i
+
+    scan(0)
+    return bodies
+
+
 def _has_persistence_write_intent(command: str) -> bool:
     write_view = _mask_quoted(command)
+    for body in _persistence_substitution_bodies(command):
+        write_view += "\n" + _mask_quoted(body)
     # Shell -c arguments are executable code, unlike printed Python strings.
     for match in re.finditer(r"\b(?:ba|da|z|k)?sh\s+-[a-zA-Z]*c\s+(['\"])(.*?)\1", command, re.S):
         write_view += "\n" + _mask_quoted(match.group(2))
@@ -3900,7 +3953,13 @@ def classify_persistence_command(command: str) -> Optional[str]:
     """
     if not command:
         return None
-    command = _deobfuscate(command)
+    # Search-pattern text is data, not a persistence target. Keep shell
+    # substitutions and all other arguments/commands visible. In particular, a
+    # clone log redirect must not combine with authorized_keys in a grep regex.
+    command = _mask_literal_search_patterns(command)
+    # Capture before deobfuscation: echo-substitution folding can hide redirects.
+    substitutions = _persistence_substitution_bodies(command)
+    command = _deobfuscate(command) + "\n" + "\n".join(substitutions)
     # A persistence VERB that appears only inside a printed/echoed string
     # (e.g. `echo "No crontab currently installed"`) is a message, not an
     # installer — match verbs against a quote-stripped view. A real

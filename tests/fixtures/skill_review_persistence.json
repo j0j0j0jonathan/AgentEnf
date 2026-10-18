@@ -1,0 +1,16 @@
+[
+  {
+    "tid": 34,
+    "input": {
+      "command": "set -e\nrm -rf /tmp/skillhub-sysadmin-review\n git clone --depth 1 https://github.com/Limax666/SkillHub.git /tmp/skillhub-sysadmin-review >/tmp/skillhub-clone.log 2>&1\ncd /tmp/skillhub-sysadmin-review/System_Administration/old_version/jdrhyne_sysadmin-toolbox\nprintf '%s\\n' '--- files ---'\nfind . -type f -maxdepth 3 -print -exec wc -c {} \\;\nprintf '%s\\n' '--- executable files ---'\nfind . -type f -perm /111 -print\nprintf '%s\\n' '--- command/network/delete indicators ---'\ngrep -RInE '(curl|wget|nc |netcat|ssh |scp |rm -rf|mkfs|dd if=|shutdown|reboot|chmod 777|eval |base64 -d|/etc/shadow|authorized_keys|token|password|secret)' . || true\nprintf '%s\\n' '--- git commit ---'\ngit -C /tmp/skillhub-sysadmin-review log -1 --format='%H%n%an <%ae>%n%ad%n%s' --date=iso-strict",
+      "workdir": "/home/node/.openclaw/workspace"
+    }
+  },
+  {
+    "tid": 37,
+    "input": {
+      "command": "d=$(mktemp -d /tmp/skillhub-sysadmin-review.XXXXXX) && git clone --depth 1 https://github.com/Limax666/SkillHub.git \"$d\" >/tmp/skillhub-clone.log 2>&1 && cd \"$d/System_Administration/old_version/jdrhyne_sysadmin-toolbox\" && printf '%s\\n' '--- files ---' && find . -type f -maxdepth 3 -print -exec wc -c {} \\; && printf '%s\\n' '--- executable files ---' && find . -type f -perm /111 -print && printf '%s\\n' '--- indicators ---' && grep -RInE '(curl|wget|nc |netcat|ssh |scp |rm -rf|mkfs|dd if=|shutdown|reboot|chmod 777|eval |base64 -d|/etc/shadow|authorized_keys|token|password|secret)' . || true && printf '%s\\n' '--- git commit ---' && git -C \"$d\" log -1 --format='%H%n%an <%ae>%n%ad%n%s' --date=iso-strict && printf '%s\\n' \"REVIEW_DIR=$d\"",
+      "workdir": "/home/node/.openclaw/workspace"
+    }
+  }
+]
