@@ -163,15 +163,17 @@ def _is_local_verify_or_test_exec(command: str) -> bool:
     return bool(command) and bool(_LOCAL_VERIFY_EXEC_RE.search(command))
 
 
+# Preserve command position through common execution wrappers. A pathname passed
+# to a processor (pdftotext, jq, cat, ...) is not an executable invocation.
+_DL_EXEC_PREFIX = (
+    r"(?:(?:sudo(?:\s+-[\w-]+)*|nohup|timeout(?:\s+-[\w-]+)*\s+\d+[smhd]?)\s+)*"
+)
+_DL_EXEC_PATH = r"[\"']?(?:\./|/(?:tmp|home|usr)/|\$HOME/|\$\{HOME\}/|~/)"
 _DL_THEN_RUN_RE = re.compile(
-    # A download followed by `chmod +x` is preparation, not execution. Require
-    # a later command-position invocation after chmod, or a direct invocation
-    # of the fetched path, before emitting remote_payload execution.
-    r"\b(?:curl|wget)\b[^\n]*\s-[oO]\b[^\n]*&&[^\n]*(?:"
-    r"chmod\s+\+x[^\n]*&&[^\n]*(?:\./|/(?:tmp|home|usr)/)"
-    r"|\./|\s/(?:tmp|home|usr)/)"
-    r"|\bwine\b\s+\S+\.exe"
-    r"|\bchmod\s+\+x\b[^\n]*&&[^\n]*(?:\./|/tmp/)",
+    r"\b(?:curl|wget)\b[^\n;|]*\s-[oO]\b[\s\S]*?(?:&&|;|\||\n)\s*[(\s]*"
+    + _DL_EXEC_PREFIX + _DL_EXEC_PATH
+    + r"|\bwine\b\s+\S+\.exe"
+    + r"|\bchmod\s+\+x\b[^\n]*&&\s*[(\s]*(?:\./|/tmp/)",
     re.IGNORECASE,
 )
 # A payload passed to an inline interpreter that runs a shell / external command
@@ -2927,6 +2929,58 @@ def _mask_literal_search_patterns(command: str) -> str:
     return pattern.sub(replace, command)
 
 
+def _mask_awk_regex_redirects(command: str) -> str:
+    """Hide > inside literal AWK regexes, only for redirect detection.
+
+    Keep program bodies, AWK strings, and shell expansions visible. This is a
+    narrow lexical correction, not an assertion that an AWK program is safe.
+    """
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        words = []
+    if (len(words) == 3 and posixpath.basename(words[0]) in {"bash", "sh", "zsh", "ksh"}
+            and re.fullmatch(r"-[a-z]*c[a-z]*", words[1])):
+        command = words[2]
+
+    def mask_program(match):
+        program = match.group("program")
+        if match.group("quote") == '"' and ("$" in program or "`" in program):
+            return match.group(0)
+        chars = list(program)
+        in_string = False
+        i = 0
+        while i < len(program):
+            if program[i] == "\\":
+                i += 2
+                continue
+            if program[i] == '"':
+                in_string = not in_string
+            # A regex may be a bare pattern or an operand after a match /
+            # boolean operator. Do not treat division or quoted AWK strings as regexes.
+            prefix = program[:i].rstrip()
+            regex_position = (not prefix or prefix[-1] in "~!(,=;{\n" or
+                              prefix.endswith(("&&", "||", "}")))
+            if not in_string and program[i] == "/" and regex_position:
+                regex = re.match(r"/(?:\\.|[^/\\\n])*/", program[i:])
+                if regex:
+                    end = i + regex.end()
+                    for j in range(i, end):
+                        if chars[j] == ">":
+                            chars[j] = " "
+                    i = end
+                    continue
+            i += 1
+        start, end = match.span("program")
+        offset = match.start()
+        return match.group(0)[:start-offset] + "".join(chars) + match.group(0)[end-offset:]
+
+    # Single-quoted programs cannot interpolate. Double-quoted programs are
+    # masked only when they contain neither dollar nor backtick expansion.
+    return re.sub(r"\b(?:awk|gawk|mawk)\s+(?P<quote>['\"])(?P<program>.*?)(?P=quote)",
+                  mask_program, command)
+
+
 def classify_impact_kind(command: str) -> Optional[str]:
     """Return the impact sub-kind for a bash command, or None.
 
@@ -3003,7 +3057,7 @@ def classify_impact_kind(command: str) -> Optional[str]:
         if _OPS_TREE_WIPE_RE.search(command):
             return "destructive_ops_tree"
         return "destructive_bulk"
-    if _IMPACT_PROTECTED_OVERWRITE_RE.search(command):
+    if _IMPACT_PROTECTED_OVERWRITE_RE.search(_mask_awk_regex_redirects(command)):
         return "destructive_protected"
     # Single-file destructive op on a CORE SYSTEM file (non-recursive delete, or a
     # world-writable chmod). Caught BEFORE the generic file_delete fallback so a

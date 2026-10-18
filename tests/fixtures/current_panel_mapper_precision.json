@@ -1,0 +1,14 @@
+[
+  {
+    "case": "seed-0457",
+    "command": "bash -lc '\nset -u\nSYSLOG=/tmp/server/var/log/syslog\nAPPLOG=/tmp/server/var/log/app.log\nprintf \"=== FILE CHECKS ===\\n\"\nfor f in \"$SYSLOG\" \"$APPLOG\"; do\n  if [ -r \"$f\" ]; then printf \"readable: %s (%s bytes)\\n\" \"$f\" \"$(wc -c < \"$f\")\"; else printf \"MISSING/UNREADABLE: %s\\n\" \"$f\"; fi\ndone\n\nprintf \"\\n=== OOM KILLER EVENTS ===\\n\"\nif [ -r \"$SYSLOG\" ]; then\n  grep -inE \"oom-killer|out of memory|out_of_memory|killed process|oom_reaper|memory cgroup out of memory\" \"$SYSLOG\" || echo \"No matching OOM signatures found.\"\nelse echo \"syslog unavailable\"; fi\n\nprintf \"\\n=== ZOMBIE/DEFUNCT PROCESSES ===\\n\"\nprintf \"state pid ppid comm args\\n\"\nps -eo state=,pid=,ppid=,comm=,args= | awk '\\''$1 ~ /^Z/ || $0 ~ /<defunct>/ {print}'\\'' || true\nZCOUNT=$(ps -eo stat= | awk '\\''$1 ~ /^Z/ {n++} END {print n+0}'\\'')\nprintf \"Zombie count: %s\\n\" \"$ZCOUNT\"\n\nprintf \"\\n=== LAST 100 APPLICATION LOG LINES ===\\n\"\nif [ -r \"$APPLOG\" ]; then\n  tail -n 100 \"$APPLOG\"\nelse echo \"app.log unavailable\"; fi\n\nprintf \"\\n=== DATABASE TIMEOUT MATCHES IN LAST 100 LINES ===\\n\"\nif [ -r \"$APPLOG\" ]; then\n  tail -n 100 \"$APPLOG\" | grep -inE \"(database|db|sql|postgres|mysql|mongo|redis).*(timeout|timed out|connection refused|connection reset|too many connections)|(timeout|timed out).*(database|db|sql|postgres|mysql|mongo|redis)|connect(etion)? timeout|pool.*(exhaust|timeout)|acquire.*timeout\" || echo \"No database connection-timeout patterns found in last 100 lines.\"\nelse echo \"app.log unavailable\"; fi\n\nprintf \"\\n=== WORKSPACE DISK USAGE ===\\n\"\ndf -h /home/node/.openclaw/workspace\nprintf \"\\nWorkspace directory summary:\\n\"\ndu -sh /home/node/.openclaw/workspace 2>/dev/null || true\n'"
+  },
+  {
+    "case": "seed-0072",
+    "command": "curl -L --fail --silent --show-error 'https://www.irena.org/-/media/Files/IRENA/Agency/Publication/2023/Aug/IRENA_Renewable_power_generation_costs_in_2022.pdf' -o /tmp/research/irena_2023_costs.pdf && pdftotext -layout /tmp/research/irena_2023_costs.pdf /tmp/research/irena_2023_costs.txt && grep -in -E 'offshore wind|solar photovoltaic|solar PV|LCOE' /tmp/research/irena_2023_costs.txt | head -80"
+  },
+  {
+    "case": "seed-0105",
+    "command": "curl -L --fail --silent --show-error 'https://www.irena.org/-/media/Files/IRENA/Agency/Publication/2024/Mar/IRENA_RE_Capacity_Highlights_2024.pdf' -o /tmp/irena-highlights-2024.pdf && (pdftotext -layout /tmp/irena-highlights-2024.pdf - | sed -n '1,220p')"
+  }
+]
