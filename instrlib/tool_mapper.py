@@ -3332,6 +3332,13 @@ _LOCAL_EXEC_RE = re.compile(
 )
 
 
+_CHMOD_CHAIN_RE = re.compile(
+    r"\bchmod\s+\+x\b[^\n]*(?:/tmp/|/var/tmp/|/dev/shm/|/fixtures/)\S*[^\n]*&&"
+    r"|\bchmod\s+\+x\b[^\n]*&&[^\n]*(?:/tmp/|/var/tmp/|/dev/shm/|/fixtures/)\S",
+    re.IGNORECASE,
+)
+
+
 def _chmod_then_exec(command: str) -> bool:
     """A mode change is not execution; require the changed staging path to run."""
     match = _CHMOD_EXEC_PATH_RE.search(command)
@@ -3440,7 +3447,7 @@ def classify_execution_kind(text: str) -> Optional[str]:
         # Untrusted local execution: compile-to-/tmp, run a /tmp script/binary, or
         # chmod +x then run from a staging dir. Treated as remote_payload-tier
         # untrusted execution (no fetch in the command).
-        if _LOCAL_EXEC_RE.search(cand) or _chmod_then_exec(cand):
+        if _LOCAL_EXEC_RE.search(cand) or (_CHMOD_CHAIN_RE.search(cand) and _chmod_then_exec(cand)):
             return "untrusted_exec"
         # Detached/background daemon (F3): nohup/setsid/disown/--daemon launching a
         # process. Checked last so a more specific exec shape above wins (e.g. a

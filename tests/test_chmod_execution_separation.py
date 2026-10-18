@@ -15,3 +15,6 @@ def test_real_following_execution_remains_classified(tail):
 
 def test_different_artifact_does_not_satisfy_chmod_join():
     assert classify_execution_kind('chmod +x /tmp/job.sh && bash /tmp/other.sh') is None
+
+def test_fix_does_not_expand_numeric_chmod_execution_policy():
+    assert classify_execution_kind('chmod 0755 /tmp/project/scripts/audit.sh && /tmp/project/scripts/audit.sh') is None
