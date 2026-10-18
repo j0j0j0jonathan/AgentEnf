@@ -36,7 +36,7 @@ def build(source=SRC, target=OUT):
             # Only the human-readable explanation changes. The interval already is 600 s.
             text = text.replace('within the last 2 minutes', 'within the last 10 minutes')
         group['mfotl'] = text
-    pack['meta'] = {'name': 'optimized-v1-cleanup', 'base_sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
+    pack['meta'] = {**pack.get('meta', {}), 'name': 'optimized-v1-cleanup', 'base_sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
                     'note': 'Cleanup only. Lexical approval exemption withdrawn. No thresholds, Blocks, or cross-group coverage changed.'}
     target.write_text('# Cleanup only; original lexical exemption withdrawn. Opt-in, not a new default.\n'
                       + yaml.safe_dump(pack, sort_keys=False, width=1000))

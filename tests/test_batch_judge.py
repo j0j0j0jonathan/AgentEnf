@@ -991,3 +991,24 @@ def test_session_cache_file_snapshots_deduped_entries(tmp_path, monkeypatch):
     assert len(lines) == 2
     assert "_snapshot_id" in json.loads(lines[0])
     assert json.loads(lines[1])["key"] == "same-key"
+
+
+def test_current_message_signature_is_precomputed_with_exact_text(monkeypatch, tmp_path):
+    from static_analysis import extract_predicate_calls
+    name = 'requests_exact_secret_disclosure'
+    config = _planner_state([name], inputs=[{'source': 'Message', 'arg': 'content'}])
+    monkeypatch.setattr(predicates, '_state', lambda: config)
+    monkeypatch.setattr(predicates, '_user_predicate_specs', lambda: config['user_predicates'])
+    monkeypatch.setattr(predicates, 'judge_plan', lambda n, c: ('criterion', ()))
+    sig = tmp_path / 'test.sig'
+    sig.write_text('Message(tid:int, role:string, content:string, n:int)\nfun requests_exact_secret_disclosure(content:string):float\n')
+    formula = tmp_path / 'test.mfotl'
+    formula.write_text('ALWAYS (FORALL t, m, n. (Message(t, "user", m, n) AND requests_exact_secret_disclosure(m) = 1) IMPLIES:R Block(t, "tool", "test", "test"))')
+    calls = extract_predicate_calls(formula, sig)
+    text = 'Grüße 秘密 "quoted" \\ exact\ntext'
+    events = [Event('Message', 17, 'user', text, 12), Event('Message', 17, 'user', text, 12)]
+    planned = batch_judge._select_active_policy(events, calls)
+    assert len(planned) == 1
+    assert planned[0][1] == text
+    assert planned[0][2].predicate_name == name
+    assert batch_judge._event_values([Event('Turn', 17, 'req-17', 'session')])[('Turn', 'sid')] == ['session']

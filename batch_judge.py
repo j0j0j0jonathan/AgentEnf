@@ -38,7 +38,8 @@ LOGGER = logging.getLogger(__name__)
 
 _EVENT_ARG_INDEX: dict[str, dict[str, int]] = {
     "SessionStart": {"sid": 0},
-    "Turn": {"tid": 0, "sid": 1},
+    "Turn": {"tid": 0, "rid": 1, "sid": 2},
+    "Message": {"tid": 0, "role": 1, "content": 2, "n": 3},
     "UserMessage": {"tid": 0, "content": 1, "token_count": 2},
     "AssistantHistory": {"tid": 0, "content": 1, "token_count": 2},
     "SystemPrompt": {"tid": 0, "content": 1, "token_count": 2},
@@ -47,6 +48,7 @@ _EVENT_ARG_INDEX: dict[str, dict[str, int]] = {
     "CompletionObserved": {"tid": 0, "content": 1, "token_count": 2},
     "Completion": {"tid": 0, "content": 1, "token_count": 2},
     "CompletionReleased": {"tid": 0, "content": 1, "token_count": 2},
+    "ReplyEvidence": {"tid": 0, "content": 1},
     "TokenUsage": {"tid": 0, "prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
     # Tool-plan / tool-call input (the proposed command/args), so judges that
     # classify the agent's action can be pre-warmed in the tool phase.
@@ -61,8 +63,10 @@ _DEFAULT_INPUTS: tuple[dict[str, str], ...] = (
 _JUDGE_ALLOWED_INPUTS: frozenset[tuple[str, str]] = frozenset(
     {
         ("UserMessage", "content"),
+        ("Message", "content"),
         ("CompletionObserved", "content"),
         ("Completion", "content"),
+        ("ReplyEvidence", "content"),
         ("ToolPlanned", "input"),
         ("ToolCall", "input"),
     }

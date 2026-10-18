@@ -533,6 +533,7 @@ policies: []
         "memory_poison": True,
         "authored_capability": True,
         "configuration_change": False,
+        "property_contract": "",
     }
 
 

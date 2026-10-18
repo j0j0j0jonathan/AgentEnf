@@ -1,0 +1,56 @@
+Startup-context experiment — offline only
+========================================
+
+Purpose
+OpenClaw's recorded Project Context already supplies several private workspace
+files, while AGENTS.md still instructs the model to read those files at startup.
+Remove that redundant instruction instead of bypassing approval policies.
+
+Status
+assembly.py is a pure prompt-assembly prototype, not installed in OpenClaw and
+not imported by the proxy or gate. No live profile, policy formula, classifier,
+event signature or permission decision changes. The returned context differs
+only in the exact recognized Session Startup paragraph of AGENTS.md. First-run
+onboarding and every other file body remain unchanged.
+
+Contract being tested
+- The loader/prompt builder supplies observations for this namespace, session,
+  request, workspace and local calendar day. Full and truncated observations
+  carry a file version and a hash of the exact supplied text.
+- Full supplied context can replace a read performed solely for startup.
+- Confirmed absence must be an explicit loader observation. No Project Context
+  section means UNKNOWN, not absent. Unknown/truncated resources retain reads.
+- A fresh request requires a fresh receipt. Changed supplied text rejects an
+  old hash. Guidance explicitly permits fresh reads through normal tool checks.
+- Same basenames, textual 'origin=startup' claims, or a file saying 'absent'
+  cannot populate the observation structure. No such structure is accepted
+  from model or tool input in this prototype because it has no runtime endpoint.
+- The assembler fails on an unfamiliar AGENTS startup template. A future opt-in
+  adapter should leave the original prompt unchanged and report unsupported
+  guidance, rather than silently rewrite arbitrary instructions.
+
+Trust and limitations
+These Python data classes are NOT an attestation format. Anyone calling this
+offline function can construct them. No production path may trust a receipt
+from an agent, user message, tool arguments, or arbitrary plugin metadata.
+Canonical spelling validation does not resolve a symlink or verify a live file.
+That requires a runtime loader integration with safe file opening, identity and
+version capture, explicit ENOENT versus permission/error handling, and final
+prompt truncation accounting. A request identifier must not be reused.
+The current code tests hash consistency and request isolation, not that a file
+has remained unchanged on disk since the loader read it.
+
+Loading a memory file does not make its contents safe. In particular, the tests
+deliberately preserve malicious memory content, so they cannot demonstrate that
+memory poisoning or disclosure is prevented. Model-requested rereads, writes,
+outputs and outbound tools still need the existing enforcement. If a file must
+never reach the model, enforce at loading or before forwarding the request.
+
+Tests (run from repository root)
+.venv/bin/python -m pytest -q tests/test_startup_context.py
+
+The workspace's outputs/trusted-startup-review-2026-10-14 contains the audit,
+historical-panel verification, prompt-only replay and proposed live comparison.
+The replay uses SYNTHETIC receipts and confirms template compatibility only;
+it must not be described as an authenticated startup integration or an observed
+reduction in tool calls. It adds prompt text, so token savings are unmeasured.

@@ -98,7 +98,7 @@ def extract_inbound_events(
         if _call_id_key(call_id)
     }
 
-    with session_context(sid):
+    with session_context(sid, verified_artifacts='artifact_provenance_v3' in (active_policies or ())):
         events = _policy_active_events(tid, active_policies)
         if include_session_start:
             events.append(Event("Session", sid))
@@ -125,6 +125,8 @@ def extract_outbound_events(
     response: JsonObject,
     api_format: str,
     active_policies: Sequence[str] | None = None,
+    *,
+    include_reply_evidence: bool = False,
 ) -> list[Event]:
     """Extract Phase-2 events from chat response before it is released.
 
@@ -148,6 +150,13 @@ def extract_outbound_events(
     else:
         raise ValueError(f"Unsupported api_format: {api_format!r}")
 
+    if include_reply_evidence:
+        from instrlib.reply_evidence import build_reply_evidence
+        completions = [e for e in events if e.name == "Completion"]
+        if len(completions) != 1:
+            raise ValueError("Reply evidence requires exactly one pending completion")
+        events.append(Event("ReplyEvidence", tid,
+                            build_reply_evidence(request, family, str(completions[0].args[1]))))
     return events
 
 # Helpers

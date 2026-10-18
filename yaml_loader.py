@@ -49,6 +49,7 @@ _LLM_JUDGE_ALLOWED_INPUTS: frozenset[tuple[str, str]] = frozenset(
     {
         ("Message", "content"),
         ("Completion", "content"),
+        ("ReplyEvidence", "content"),  # bounded explicit context for this reply
         # Tool-plan / tool-call input string (the proposed command or args).
         # Lets judges classify the *action* an agent is about to take, not just
         # request/response text. Still current-turn only (no history/results).
@@ -57,8 +58,8 @@ _LLM_JUDGE_ALLOWED_INPUTS: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
-# Restriction: LLM judges may see current message/completion content or the
-# current tool-plan/tool-call input — NOT tool results, session history, etc.
+# Inputs are explicit events. Historical context is supported only inside the
+# bounded, request-local ReplyEvidence envelope, not a mutable session lookup.
 
 
 _VALID_SWITCH_KINDS = {"int", "number", "boolean", "choice"}
@@ -87,6 +88,7 @@ class IngestJudgeConfig:
     memory_poison: bool = True
     authored_capability: bool = True
     configuration_change: bool = False
+    property_contract: str = ""  # candidate-only literal_flow_v1; empty = original criteria
 
 
 @dataclass(frozen=True)
@@ -159,6 +161,7 @@ class PredicateSpec:
     backend: str = ""        # "openai" | "openai_decisions" | "ollama" | "anthropic" | ""
     model: str = ""          # provider-specific model id; "" = use global default
     timeout_ms: int = 0      # 0 = use global JUDGE_TIMEOUT_MS
+    strategy: str = ""       # opt-in versioned orchestration; empty = single judge
 
 
 @dataclass(frozen=True)
@@ -289,18 +292,28 @@ def load(path: Path, runtime: RuntimeConfig) -> LoadedConfig:
     runtime.logs_dir.mkdir(parents=True, exist_ok=True)
     sig_path = _write_composite_sig(runtime.signature_file, runtime.composite_signature_file, predicates)
     enfguard_bin = backend.enfguard_bin or runtime.enfguard_bin
-    _validate_custom_mfotl_snippets(
-        sig_path=sig_path,
-        policies=policies,
-        enfguard_bin=enfguard_bin,
-        work_dir=runtime.state_dir,
-    )
+    if runtime.monitor_backend != 'enfflash':
+        _validate_custom_mfotl_snippets(
+            sig_path=sig_path,
+            policies=policies,
+            enfguard_bin=enfguard_bin,
+            work_dir=runtime.state_dir,
+        )
     composite_text, custom_blocks = _build_composite_mfotl(
         runtime.default_policy_file,
         policies,
     )
     candidate_path = _write_candidate_composite_mfotl(runtime.composite_policy_file, composite_text)
-    _validate_composite_mfotl(sig_path, candidate_path, enfguard_bin)
+    if runtime.monitor_backend == 'enfflash':
+        from instrlib.enfflash import EnfFlashEnforcer
+        # Compile before promoting a candidate. Failure must not silently select
+        # the old bridge or promote an invalid configuration.
+        EnfFlashEnforcer(str(runtime.enfflash_bin), str(sig_path), str(candidate_path),
+            compiler=runtime.enfflash_compiler, cache_dir=runtime.state_dir/'enfflash',
+            fun=str(runtime.predicates_file) if runtime.predicates_file.exists() else None,
+            env=runtime.enfguard_env)._command()
+    else:
+        _validate_composite_mfotl(sig_path, candidate_path, enfguard_bin)
     _validate_llm_judge_policy_sources(sig_path, candidate_path, predicates)
     merged_path = _promote_composite_mfotl(
         runtime.composite_policy_file,
@@ -394,6 +407,9 @@ def _parse_ingest_judges(raw: Any, legacy_default: bool) -> IngestJudgeConfig:
     """
 
     data = _mapping(raw, "backend.ingest_judges")
+    property_contract = str(data.get("property_contract", "") or "").strip()
+    if property_contract not in {"", "literal_flow_v1"}:
+        raise ValueError("Unknown ingest_judges.property_contract")
     master = _bool_value(data.get("enabled"), legacy_default)
     return IngestJudgeConfig(
         enabled=master,
@@ -416,6 +432,7 @@ def _parse_ingest_judges(raw: Any, legacy_default: bool) -> IngestJudgeConfig:
         memory_poison=_bool_value(data.get("memory_poison"), master),
         authored_capability=_bool_value(data.get("authored_capability"), master),
         configuration_change=_bool_value(data.get("configuration_change"), False),
+        property_contract=property_contract,
     )
 
 
@@ -509,9 +526,11 @@ def _parse_predicates(
             raise ValueError(f"llm_judge predicate {name!r} needs system_prompt")
         if kind == "llm_judge":
             _validate_llm_judge_inputs_current_only(name, inputs)
-            _warn_judge_prompt_format_instructions(name, system_prompt)
+            if not data.get("strategy"):
+                _warn_judge_prompt_format_instructions(name, system_prompt)
 
         on_fail = data.get("on_fail")
+        strategy = str(data.get("strategy", "") or "").strip()
 
         # Per-predicate judge backend overrides. Empty / zero means "use
         # the global default declared in `backend:`". `kind: python`
@@ -526,6 +545,17 @@ def _parse_predicates(
                 f"(got {backend_raw!r})"
             )
         model_override = str(data.get("model", "") or "").strip()
+        if strategy:
+            from instrlib.reply_guard import STRATEGY, OUTPUT_CONTRACT
+            if strategy != STRATEGY:
+                raise ValueError(f"predicate {name!r}: unknown strategy {strategy!r}")
+            if (kind != "llm_judge" or backend_raw != "openai_decisions"
+                    or inputs != (PredicateInput("ReplyEvidence", "content"),)
+                    or len(args) != 1 or args[0].type != "string"
+                    or on_fail != "closed" or system_prompt != OUTPUT_CONTRACT):
+                raise ValueError(f"predicate {name!r}: reply_guard_v1 requires a single string "
+                                 "ReplyEvidence.content input, kind llm_judge, backend "
+                                 "openai_decisions, on_fail closed, and its versioned system_prompt")
         timeout_override = data.get("timeout_ms")
         if timeout_override is None:
             timeout_ms = 0
@@ -554,6 +584,7 @@ def _parse_predicates(
                 backend=backend_raw,
                 model=model_override,
                 timeout_ms=timeout_ms,
+                strategy=strategy,
             )
         )
     return specs
@@ -977,6 +1008,7 @@ def _write_active_state(
             "memory_poison": backend.ingest_judges.memory_poison,
             "authored_capability": backend.ingest_judges.authored_capability,
             "configuration_change": backend.ingest_judges.configuration_change,
+            "property_contract": backend.ingest_judges.property_contract,
         },
         "judge_fail_modes": judge_fail_modes,
         "user_predicates": [_predicate_state(spec) for spec in predicates],
@@ -1066,6 +1098,7 @@ def _predicate_state(spec: PredicateSpec) -> JsonObject:
         "backend": spec.backend,
         "model": spec.model,
         "timeout_ms": spec.timeout_ms,
+        "strategy": spec.strategy,
     }
 
 

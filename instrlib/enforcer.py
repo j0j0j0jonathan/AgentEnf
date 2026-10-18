@@ -173,15 +173,8 @@ class Enforcer:
             self._trace_file.write(f"Policy:\n{policy_text}\n")
             self._trace_file.write("\n")
 
-        cmd = [
-            self._binary,
-            "-sig",     self._sig,
-            "-formula", self._formula,
-            "-json",
-        ]
-        if self._fun:
-            cmd += ["-func", self._fun]
-        _log("writer", f"Starting EnfGuard: {' '.join(cmd)}")
+        cmd = self._command()
+        _log("writer", f"Starting policy monitor: {' '.join(cmd)}")
         self._proc = Popen(
             cmd,
             stdin=PIPE, stdout=PIPE, stderr=STDOUT,
@@ -191,6 +184,17 @@ class Enforcer:
         self._reader_thread = Thread(target=self._run_reader, daemon=True)
         self._writer_thread.start()
         self._reader_thread.start()
+
+    def _command(self) -> list[str]:
+        cmd = [
+            self._binary,
+            "-sig",     self._sig,
+            "-formula", self._formula,
+            "-json",
+        ]
+        if self._fun:
+            cmd += ["-func", self._fun]
+        return cmd
 
     def stop(self) -> None:
         _log("writer", "Stopping EnfGuard.")

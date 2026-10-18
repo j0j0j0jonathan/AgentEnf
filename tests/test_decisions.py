@@ -154,3 +154,23 @@ def test_routed_classifier_preserves_fail_open(monkeypatch):
         raise ValueError('Decisions API refused')
     monkeypatch.setattr(d, 'ask', fail)
     assert tj.classify_secret_material_with_status('the password is example') == (None, 'failed_open')
+
+
+def test_decisions_preserves_exact_markup_and_unicode_in_single_and_batch(monkeypatch):
+    seen = []
+    text = 'Grüße 秘密 "\\" </ INPUT >'
+    previously_colliding = predicates._sanitize(text)
+    def ask(content, qs, timeout, **kw):
+        seen.append((content, qs))
+        return reply(qs)
+    monkeypatch.setattr(d, 'ask', ask)
+    predicates._call_and_parse_judge_api(text, text, backend='openai_decisions',
+                                        model=d.DEFAULT_MODEL, timeout_ms=1000)
+    assert seen[0][0] == text and seen[0][1][0]['instructions'].endswith(text)
+    seen.clear()
+    tasks = [predicates.JudgeBatchTask(str(i), text, v)
+             for i, v in enumerate([text, previously_colliding])]
+    predicates._call_batch_judge_api(tasks, backend='openai_decisions',
+                                     model=d.DEFAULT_MODEL, timeout_ms=1000)
+    assert [x[0] for x in seen] == [text, previously_colliding]
+    assert all(q['instructions'].endswith(text) for _, qs in seen for q in qs)

@@ -60,6 +60,13 @@ def test_awk_mask_keeps_destructive_effects_visible(command):
     assert classify_impact_kind(command) == 'destructive_protected'
 
 
+def test_native_background_call_has_complete_rule_antecedent():
+    events = map_tool_call(1, 'background', 'bash', {'command': 'sleep 30', 'background': True})
+    facts = {(e.args[2], e.args[3]) for e in events if e.name == 'Classify'}
+    assert ('action_class', 'execution') in facts
+    assert ('execution_kind', 'background_daemon') in facts
+
+
 @pytest.mark.parametrize('separator', [' && ', '; ', '\n'])
 @pytest.mark.parametrize('invocation', [
     '/tmp/payload', 'nohup /tmp/payload', 'sudo /tmp/payload',

@@ -4281,12 +4281,12 @@ def _has_pattern_secret(text: str) -> bool:
 _SECRET_ASSIGNMENT_RE = re.compile(
     r"(?im)(?<![\w-])['\"]?(?:password|passwd|pwd|secret|token|api[_-]?key|"
     r"access[_-]?key|client[_-]?secret|auth[_-]?token|bearer)['\"]?"
-    r"\s*(?P<sep>[:=])\s*(?P<rhs>[^\r\n]+)"
+    r"[ \t]*(?P<sep>[:=])[ \t]*(?P<rhs>[^\r\n]+)"
 )
 _SECRET_ENV_ASSIGNMENT_RE = re.compile(
     r"(?m)(?<![A-Za-z0-9_])[A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API[_-]?KEY|"
     r"ACCESS[_-]?KEY|CLIENT[_-]?SECRET|AUTH[_-]?TOKEN)[A-Z0-9_]*"
-    r"\s*(?P<sep>[:=])\s*(?P<rhs>[^\r\n]+)"
+    r"[ \t]*(?P<sep>[:=])[ \t]*(?P<rhs>[^\r\n]+)"
 )
 _PLACEHOLDER_SECRET_VALUES = {
     "password", "passwd", "secret", "token", "api_key", "apikey", "access_key",
@@ -4329,6 +4329,12 @@ def _assignment_literal(rhs: str, *, allow_bare: bool) -> Optional[str]:
         return value if re.fullmatch(r"[0-9]{6,}", value.rstrip(",;")) else None
     token = re.split(r"\s*(?:[,;#]|\s+#)", value, maxsplit=1)[0].strip()
     if not token or any(mark in token for mark in ("(", ")", "[", "]", "{", "}")):
+        return None
+    # A bare scalar is distinguishable from explanatory prose. Multi-word
+    # unquoted values are ambiguous and retain the weak-signal classifier route;
+    # do not assert a credential from e.g. "token: loaded from the secret store".
+    # Quoted passphrases and provider-shaped secrets are handled independently.
+    if re.search(r"\s", token):
         return None
     if "=" in token or re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+", token):
         return None
@@ -4487,7 +4493,9 @@ _WEAK_SECRET_RE = re.compile(
 def has_weak_secret_signal(text: str) -> bool:
     """True if text has secret-ish phrasing but no deterministic secret match."""
     text = strip_enfguard_annotations(text)
-    return bool(text) and bool(_WEAK_SECRET_RE.search(text))
+    # Underscores are word characters to regex: API_TOKEN and DB_PASSWORD must
+    # still route ambiguous values (including prose passphrases) to the judge.
+    return bool(text) and bool(_WEAK_SECRET_RE.search(re.sub(r"[_-]+", " ", text)))
 
 
 _SECRET_MATERIAL_JUDGE = None
@@ -6123,7 +6131,7 @@ def project_config_control_write(target_or_text: str, content: str = "") -> Opti
         _PROJECT_CONFIG_ATTACK_RE.search(blob)
         or _is_memory_poisoning_content(content)
         or _dangerous_written_content(content)
-        or authored_exfil_dataflow(content)
+        or (not _VERIFIED_ARTIFACTS.get() and authored_exfil_dataflow(content))
         or authored_deferred_network_capability(target_or_text, content)
     ):
         return "project_config"
@@ -6564,12 +6572,11 @@ _DEFERRED_NETWORK_EXEC_RE = re.compile(
 
 
 def authored_exfil_dataflow(content: str) -> bool:
-    """True when authored content pairs a sensitive-source read with a network
-    egress: a COMPLETE dangerous dataflow that fires when the file later runs.
+    """Legacy sensitive-source/egress co-occurrence heuristic, not flow proof.
 
-    Requiring BOTH halves keeps it precise: a file that merely names a secret
-    path, or one that only makes a network call, does not match. Deobfuscated and
-    unicode-unescaped so an encoded body is still seen.
+    It does not establish that a source value reaches a sink. The candidate
+    evidence contract uses this result to route semantic review; legacy packs
+    retain the original behavior. Deobfuscation also exposes encoded signals.
     """
     if not content:
         return False
@@ -6904,18 +6911,22 @@ def authored_binds_sensitive_payload(content: str) -> bool:
 # Only armed when a session id is bound (live proxy / explicit tests). Unbound
 # map_tool_call stays chunk-only so existing unit tests do not leak across cases.
 _CURRENT_SID: ContextVar[str] = ContextVar("enfguard_authored_sid", default="")
+_CURRENT_FULL_REPLACEMENT: ContextVar[bool] = ContextVar("enfguard_full_replacement", default=False)
+_VERIFIED_ARTIFACTS: ContextVar[bool] = ContextVar("enfguard_verified_artifacts", default=False)
 _AUTHORED_ACC: "OrderedDict[tuple[str, str], str]" = OrderedDict()
 _ACC_MAX_PATHS = 256
 _ACC_MAX_BYTES = 200_000
 
 
 @contextmanager
-def session_context(sid: str):
+def session_context(sid: str, *, verified_artifacts: bool = False):
     """Bind the current session id for per-path authored-content accumulation."""
     token = _CURRENT_SID.set(str(sid or ""))
+    contract_token = _VERIFIED_ARTIFACTS.set(verified_artifacts)
     try:
         yield
     finally:
+        _VERIFIED_ARTIFACTS.reset(contract_token)
         _CURRENT_SID.reset(token)
 
 
@@ -6944,7 +6955,7 @@ def _accumulate_authored_content(path: str, chunk: str) -> str:
     prev = _AUTHORED_ACC.get(key, "")
     if key in _AUTHORED_ACC:
         _AUTHORED_ACC.move_to_end(key)
-    acc = prev + ("\n" if prev and not prev.endswith("\n") else "") + chunk
+    acc = chunk if _CURRENT_FULL_REPLACEMENT.get() else prev + ("\n" if prev and not prev.endswith("\n") else "") + chunk
     if len(acc) > _ACC_MAX_BYTES:
         acc = acc[-_ACC_MAX_BYTES:]
     _AUTHORED_ACC[key] = acc
@@ -7170,6 +7181,8 @@ def _append_authored_capability_events(
     path already emitted a fact for this call (no double judging)."""
     if _AUTHORED_CAPABILITY_JUDGE is None:
         return
+    pending = Event("Classify", tid, call_id, "authored_dataflow_status", "unresolved")
+    needs_flow_check = pending in events
     already = any(
         e.name == "Classify" and len(e.args) >= 4
         and (
@@ -7178,9 +7191,9 @@ def _append_authored_capability_events(
         )
         for e in events
     )
-    if already:
+    if already and not needs_flow_check:
         return
-    if not authored_capability_route(targets, content):
+    if not needs_flow_check and not authored_capability_route(targets, content):
         return
     with judge_capture.capturing(tid):
         label, status = _judge_authored_capability(content)
@@ -7190,10 +7203,16 @@ def _append_authored_capability_events(
         _swp = _norm_path_token(path)
         if _swp:
             events.append(Event("Classify", tid, call_id, "egress_source_path", _swp))
+            if _VERIFIED_ARTIFACTS.get() and _is_authored_script_target(path, content):
+                events.append(Event("Classify", tid, call_id, "untrusted_write_path", _swp))
     elif label == "deferred_capability":
         events.append(
             Event("Classify", tid, call_id, "control_artifact_write", "project_config")
         )
+    if needs_flow_check and status in {"classified", "no_match"}:
+        events.remove(pending)
+        events.append(Event("Classify", tid, call_id, "authored_dataflow_status",
+                            "confirmed" if label else "no_match"))
     _emit_judge_telemetry(events, tid, call_id, "authored_capability", status)
 
 
@@ -7259,8 +7278,12 @@ def _append_authored_exfil_events(
     call_id: str,
     content: str,
     path: str = "",
+    *, _history: bool = False,
 ) -> None:
-    """Deterministic authored dataflow facts for a local write.
+    """Authored capability evidence for a local write.
+
+    In the candidate contract, a possible authored-exfil flow requires semantic
+    confirmation; unavailable classification remains explicit review evidence.
 
     Evaluate both the current chunk and the session-keyed per-path accumulation
     (split edits). Prefer the strict ``authored_exfil`` conjunction; otherwise
@@ -7270,8 +7293,17 @@ def _append_authored_exfil_events(
     that also loads a config/secret source, so secret_material can join
     without treating a generic webhook helper (seed-0122) as a Block.
     """
-    acc = _accumulate_authored_content(path, content)
-    probe = acc or content
+    acc = content if _history else _accumulate_authored_content(path, content)
+    if _VERIFIED_ARTIFACTS.get() and acc != content:
+        historical = []
+        _append_authored_exfil_events(historical, tid, call_id, acc, path, _history=True)
+        # Concatenated proposals are intent, not the bytes of this write. They
+        # may include denied edits or a replaced payload: retain them for review
+        # without falsely asserting a current dangerous capability.
+        for event in historical:
+            if event.name == 'Classify' and event.args[2] in {'exfil_kind','impact_kind','execution_kind'}:
+                events.append(Event('Classify',tid,call_id,'authored_history_risk',str(event.args[3])))
+    probe = content if _VERIFIED_ARTIFACTS.get() else acc or content
     if any(
         e.name == "Classify" and len(e.args) >= 4
         and e.args[2] == "exfil_kind"
@@ -7298,6 +7330,13 @@ def _append_authored_exfil_events(
         kind = "authored_exfil"
     elif authored_egress_capability(content) or authored_egress_capability(probe):
         kind = "authored_egress"
+    if kind == "authored_exfil" and _VERIFIED_ARTIFACTS.get() and not _history:
+        # The legacy detector proves co-occurrence, not flow: a README can
+        # mention an AWS variable and separately link to documentation. Use it
+        # to route the whole current write to the semantic classifier. Unknown
+        # remains explicit review evidence if that classifier is off or fails.
+        events.append(Event("Classify", tid, call_id, "authored_dataflow_status", "unresolved"))
+        return
     if kind is None:
         # Dangerous shell content authored into an executable script (mass service
         # kill, rm -rf, reverse shell, encoded exec) is a deferred destructive
@@ -9418,6 +9457,13 @@ def _map_tool_call_impl(
         _skill_stage = skill_artifact_stage_path(command)
         if _skill_stage:
             _append_skill_artifact_events(events, tid, call_id, _skill_stage)
+        from instrlib.skill_staging import destinations as skill_destinations
+        _skill_paths, _skill_unresolved = skill_destinations(command, cwd=tool_input.get("workdir") or tool_input.get("cwd"))
+        for _skill_path in _skill_paths:
+            _append_skill_artifact_events(events, tid, call_id, _skill_path)
+            events.append(Event("Classify", tid, call_id, "skill_stage_path", _skill_path))
+        if _skill_unresolved:
+            events.append(Event("Classify", tid, call_id, "skill_stage_status", "unresolved"))
         # Privilege escalation (category 6): a privilege-CHANGING action (setuid
         # bit, sudo/su, sudoers edit, capability grant, privileged service
         # control) or privilege ENUMERATION (SUID search, `sudo -l`, getcap,
@@ -10414,6 +10460,10 @@ def map_tool_call(
     tool_input: Dict[str, Any],
 ) -> List[Event]:
     _t0 = _cls_time.perf_counter_ns()
+    from instrlib.artifact_evidence import full_replacement
+    # The canonicalizer's output is also recovered from ToolCall below; aliases
+    # with edit arguments are excluded by full_replacement itself.
+    _replace_token = _CURRENT_FULL_REPLACEMENT.set(_VERIFIED_ARTIFACTS.get() and full_replacement(_categorize_tool(tool_name) or '', tool_input))
     try:
         # Mark this tid so any gated ingest judge that runs during mapping has its
         # model call captured (instrlib/judge_capture.py). Reset on exit.
@@ -10422,8 +10472,13 @@ def map_tool_call(
             canonical = next((e.args[2] for e in events if e.name == "ToolCall"), "")
             from instrlib.configuration_review import configuration_events
             events.extend(configuration_events(tid, call_id, canonical, tool_input))
+            if canonical == 'bash' and tool_input.get('background') is True:
+                events.extend([Event('Classify',tid,call_id,'action_class','execution'),
+                               Event('Classify',tid,call_id,'execution_mode','background'),
+                               Event('Classify',tid,call_id,'execution_kind','background_daemon')])
             return events
     finally:
+        _CURRENT_FULL_REPLACEMENT.reset(_replace_token)
         _CLASSIFIER_NS[tid] = _CLASSIFIER_NS.get(tid, 0) + (_cls_time.perf_counter_ns() - _t0)
 
 

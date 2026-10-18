@@ -35,7 +35,7 @@ def test_cross_call_persistence_real_monitor(tmp_path,sid,namespace,target,expec
   result=enforcer.query(batch(2,sid,namespace,{'path':'/etc/systemd/system/demo.service',
     'content':f'[Service]\nExecStart=/bin/bash {target}\n'}),2)
  finally:enforcer.stop()
- matches=[e for e in result.get('cause',[]) if e['name']=='Block' and 'dangerous_script_then_schedule' in str(e)]
+ matches=[e for e in result.get('cause',[]) if e['name']=='Approve' and 'dangerous_script_then_schedule' in str(e)]
  assert bool(matches)==expected
 
 @pytest.mark.parametrize('content,expected',[
@@ -154,7 +154,9 @@ def test_persistence_direction_and_window(tmp_path,reverse,delta,expected):
   enf.query(batch(1,dims[0]),1,trace_ts=1000)
   result=enf.query(batch(2,dims[1]),2,trace_ts=1000+delta)
  finally:enf.stop()
- assert any(e['name']=='Block' for e in result.get('cause',[]))==expected
+ # Neither input establishes a completed write: ordering retains review only.
+ assert any(e['name']=='Approve' for e in result.get('cause',[]))==expected
+ assert not any(e['name']=='Block' for e in result.get('cause',[]))
 
 
 def test_real_monitor_oversize_egress_review(tmp_path):

@@ -14,6 +14,9 @@ Message(tid:int, role:string, content:string, n:int)
 Completion(tid:int, content:string, n:int)-
 CompletionRedacted(tid:int, content:string, n:int)+
 CompletionReleased(tid:int, content:string, n:int)
+# Candidate output check: exact reply and request-local context, serialized JSON.
+# Context is evidence of prior text, never authorization for executing a tool.
+ReplyEvidence(tid:int, content:string)
 
 # Tool / agent (4)
 # tool carries canonical tool name ("bash", "read_file",

@@ -96,6 +96,7 @@ EVENT_TYPES: tuple[tuple[str, tuple[type, ...]], ...] = (
     ("Completion", (int, str, int)),
     ("CompletionRedacted", (int, str, int)),
     ("CompletionReleased", (int, str, int)),
+    ("ReplyEvidence", (int, str)),
     # Tool / agent (4)
     ("ToolCall", (int, str, str, str)),
     ("ToolPlanned", (int, str, str, str)),

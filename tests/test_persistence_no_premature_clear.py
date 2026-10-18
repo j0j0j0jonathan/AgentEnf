@@ -100,10 +100,13 @@ def test_cleanup_claim_cannot_clear_without_verified_lifecycle(tmp_path, outcome
         result = enf.query(batch(3, "schedule_target_v2"), 3)
     finally:
         enf.stop()
+    # This trace has proposals only: retain the review checkpoint even after a
+    # cleanup claim, but never claim that the dangerous bytes were present.
     assert any(
-        e["name"] == "Block" and "dangerous_script_then_schedule" in str(e)
+        e["name"] == "Approve" and "dangerous_script_then_schedule" in str(e)
         for e in result.get("cause", [])
     )
+    assert not any(e['name']=='Block' for e in result.get('cause',[]))
 
 
 def test_path_traversal_does_not_invent_symlink_resolution():
@@ -111,12 +114,12 @@ def test_path_traversal_does_not_invent_symlink_resolution():
     assert not targets and unknown
 
 
-@pytest.mark.parametrize('command,should_block', [
+@pytest.mark.parametrize('command,should_review', [
     ('/usr/bin/python3 "/app/my job.py"', True),
     ('/usr/bin/cat "/app/my job.py"', False),
     ('/usr/bin/echo hello >"/app/my job.py"', False),
 ])
-def test_monitor_distinguishes_execution_from_data_argument(tmp_path, command, should_block):
+def test_monitor_distinguishes_execution_from_data_argument(tmp_path, command, should_review):
     binary = Path(os.environ.get('ENFGUARD_BIN', ''))
     if not binary.is_file():
         pytest.skip('requires real monitor')
@@ -137,5 +140,6 @@ def test_monitor_distinguishes_execution_from_data_argument(tmp_path, command, s
         ], 2)
     finally:
         enforcer.stop()
-    blocks = [e for e in result.get('cause', []) if e['name'] == 'Block' and 'dangerous_script_then_schedule' in str(e)]
-    assert bool(blocks) == should_block
+    reviews = [e for e in result.get('cause', []) if e['name'] == 'Approve' and 'dangerous_script_then_schedule' in str(e)]
+    assert bool(reviews) == should_review
+    assert not any(e['name']=='Block' and 'dangerous_script_then_schedule' in str(e) for e in result.get('cause',[]))

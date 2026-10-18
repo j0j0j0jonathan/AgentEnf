@@ -50,6 +50,9 @@ class RuntimeConfig:
     anthropic_api_key: str
     openai_api_key: str
     enfguard_env: dict[str, str]
+    monitor_backend: str = 'enfguard'
+    enfflash_compiler: Path | None = None
+    enfflash_bin: Path | None = None
 
 
 def _path_from_env(name: str, default: Path) -> Path:
@@ -229,6 +232,11 @@ def load_runtime_config() -> RuntimeConfig:
     trace_store_file = logs_dir / "trace_store.jsonl"
     sessions_dir = _path_from_env("ENFGUARD_SESSIONS_DIR", state_dir / "sessions")
 
+    monitor_backend = os.environ.get('AGENTENF_MONITOR_BACKEND', 'enfguard').strip().lower()
+    if monitor_backend not in {'enfguard', 'enfflash'}:
+        raise ValueError('AGENTENF_MONITOR_BACKEND must be enfguard or enfflash')
+    if monitor_backend == 'enfflash' and not all(os.environ.get(k) for k in ('ENFFLASH_COMPILER', 'ENFFLASH_BIN')):
+        raise ValueError('EnfFlash requires ENFFLASH_COMPILER and ENFFLASH_BIN')
     return RuntimeConfig(
         base_dir=BASE_DIR,
         state_dir=state_dir,
@@ -261,6 +269,9 @@ def load_runtime_config() -> RuntimeConfig:
             trace_store_file,
             sessions_dir,
         ),
+        monitor_backend=monitor_backend,
+        enfflash_compiler=Path(os.environ['ENFFLASH_COMPILER']).expanduser() if os.environ.get('ENFFLASH_COMPILER') else None,
+        enfflash_bin=Path(os.environ['ENFFLASH_BIN']).expanduser() if os.environ.get('ENFFLASH_BIN') else None,
     )
 
 

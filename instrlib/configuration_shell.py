@@ -6,14 +6,20 @@ configuration mutations carry uncertainty. This is not a general shell parser.
 import re
 import shlex
 
-_CONFIG = re.compile(r'\.(?:ya?ml|json|toml|ini|cfg|conf)$', re.I)
+_CONFIG = re.compile(r'\.(?:ya?ml|json|toml|ini|cfg|conf|env)$', re.I)
+_CONFIG_MENTION = re.compile(r'\.(?:ya?ml|json|toml|ini|cfg|conf|env)\b', re.I)
 _PATH = r'''(?:"[^"\n]+"|'[^'\n]+'|[^\s<>;&|]+)'''
 _LITERAL = re.compile(
     rf'''\A[ \t\n]*cat[ \t]+(?P<op>>>?)[ \t]*(?P<path>{_PATH})[ \t]+<<[ \t]*(?P<q>['"])(?P<delimiter>[A-Za-z_][A-Za-z_0-9]*)(?P=q)[ \t]*\n(?P<content>[\s\S]*?)\n(?P=delimiter)[ \t]*(?=\n|$)'''
 )
 
 def is_config(path):
-    return isinstance(path, str) and bool(_CONFIG.search(path))
+    if not isinstance(path, str):
+        return False
+    name = path.replace('\\', '/').rsplit('/', 1)[-1].lower()
+    # Dotenv variants (e.g. .env.production) often contain authorization flags,
+    # not just secrets. Route mutations with their full diff, as for YAML.
+    return bool(_CONFIG.search(path)) or (name.startswith('.env.') and len(name) > 5)
 
 
 def shell_configuration_writes(command):
@@ -54,7 +60,7 @@ def shell_configuration_writes(command):
         tokens = list(lexer)
     except ValueError:
         tokens = []
-        if re.search(r'\.(?:ya?ml|json|toml|ini|cfg|conf)\b', remainder, re.I):
+        if _CONFIG_MENTION.search(remainder):
             out.append({'shell_write_status': 'unresolved', 'reason': 'unparseable shell containing configuration path'})
     for i, token in enumerate(tokens):
         if token in {'>', '>>', '>|'} and i+1 < len(tokens) and is_config(tokens[i+1]):
@@ -66,7 +72,7 @@ def shell_configuration_writes(command):
         or re.search(r'\bsed\s+[^\n]*?(?:-i\b|--in-place\b)', remainder)
     ):
         out.append({'shell_write_status': 'unresolved', 'reason': 'configuration mutation command'})
-    if re.search(r'\.(?:ya?ml|json|toml|ini|cfg|conf)\b', remainder, re.I) and re.search(
+    if _CONFIG_MENTION.search(remainder) and re.search(
         r'\.(?:write_text|write_bytes|write)\s*\(|\bopen\([^\n]*[,=]\s*[\'"][wax]', remainder
     ):
         out.append({'shell_write_status': 'unresolved', 'reason': 'interpreter configuration mutation'})

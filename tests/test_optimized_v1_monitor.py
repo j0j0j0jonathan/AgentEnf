@@ -99,7 +99,7 @@ def test_instruction_authorized_execution(tmp_path, command, rc, opt):
             (1, _untrusted(1, "execution_v2", "c1", "instruction_like")),
             (2, _planned(2, "execution_v2", "c2", "exec", {"command": command})),
         ])
-        assert _has(v[1], "Approve", "untrusted_authorization") is expected, pack
+        assert _has(v[1], "Approve", "instruction_authorized_execution") is expected, pack
 
 
 # --- provenance_v1: control reads keep their approval (duplicate label only) -
@@ -123,7 +123,7 @@ def test_private_read_after_instruction_still_blocked(tmp_path):
             (1, _untrusted(1, "provenance_v1", "c1", "instruction_like")),
             (2, _planned(2, "provenance_v1", "c2", "exec", {"command": f"cat {PRIVATE}"})),
         ])[-1]
-        assert _has(v, "Block", "openclaw_private_control_read"), pack
+        assert _has(v, "Block", "openclaw_private_control_read_after_untrusted"), pack
 
 
 # --- accumulation Warn floors -----------------------------------------------
@@ -135,8 +135,8 @@ def _probe(ts, group, cls):
 
 
 @pytest.mark.parametrize("group,cls,label,rc_first,opt_first", [
-    ("discovery_v2", "discovery", "discovery_accumulation", 3, 3),
-    ("reconnaissance_v1", "reconnaissance", "recon_accumulation", 3, 3),
+    ("discovery_v2", "discovery", "discovery_accumulation_warn", 3, 3),
+    ("reconnaissance_v1", "reconnaissance", "recon_accumulation_warn", 3, 3),
 ])
 def test_accumulation_warn_floor(tmp_path, group, cls, label, rc_first, opt_first):
     for pack, first in (("rc", rc_first), ("opt", opt_first)):

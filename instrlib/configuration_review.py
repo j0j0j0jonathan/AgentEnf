@@ -1,6 +1,5 @@
 """Opt-in semantic configuration review; errors remain explicit uncertainty."""
 import json
-import re
 from instrlib.event import Event
 
 _classifier = None
@@ -47,7 +46,7 @@ def classify_configuration_with_status(content):
 
 
 def configuration_events(tid, call_id, canonical_tool, tool_input):
-    from instrlib.configuration_shell import shell_configuration_writes
+    from instrlib.configuration_shell import is_config, shell_configuration_writes
     shell_uncertain = False
     if canonical_tool == 'bash':
         tool_input = shell_configuration_writes(tool_input.get('command', ''))
@@ -58,7 +57,7 @@ def configuration_events(tid, call_id, canonical_tool, tool_input):
         return []
     path = next((tool_input.get(k) for k in ('path','file_path','filename','file','filepath')
                  if isinstance(tool_input.get(k),str) and tool_input[k]), '')
-    if canonical_tool != 'bash' and not re.search(r'\.(?:ya?ml|json|toml|ini|cfg|conf)$',path,re.IGNORECASE):
+    if canonical_tool != 'bash' and not is_config(path):
         return []
     events = [Event('Classify',tid,call_id,'artifact_write','configuration')]
     label, status = None, 'unavailable'

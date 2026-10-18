@@ -1,4 +1,5 @@
 import { enforcementDenial } from "./denial.js";
+import { attestFullWrite } from "./artifact.js";
 import fs from "fs";
 import { createHash } from "node:crypto";
 
@@ -92,7 +93,11 @@ function enfToolInput(toolName, params) {
   ) {
     const command = firstString(p.command, p.cmd, p.script, p.input, p.code);
     if (!command) return { tool: "bash", input: { command: JSON.stringify(p) } };
-    return { tool: "bash", input: { command } };
+    return { tool: "bash", input: { command,
+      ...(typeof p.background === 'boolean' ? {background:p.background} : {}),
+      ...(typeof p.workdir === 'string' ? {workdir:p.workdir} : {}),
+      ...(typeof p.cwd === 'string' ? {cwd:p.cwd} : {}),
+    } };
   }
   if (
     name === "read" || name === "read_file" || name === "view" || name === "cat" ||
@@ -108,7 +113,8 @@ function enfToolInput(toolName, params) {
     name === "write_file" || name === "code_edit" || name === "str_replace_editor" ||
     name === "str_replace_based_editor" || name === "text_editor"
   ) {
-    return { tool: "write_file", input: mappedWriteInput(p) };
+    return { tool: "write_file", input: {...mappedWriteInput(p),
+      operation: name === 'append' ? 'append' : /edit|patch|replace/.test(name) ? 'edit' : 'replace'} };
   }
   if (
     name === "web_fetch" || name === "web_search" ||
@@ -366,6 +372,7 @@ export const pluginDefinition = {
           effective_verdict: effective,
           effect_executed: effective === "block" ? false : null,
           verdict_source: verdictSource,
+          artifact_ticket: effective === 'block' ? null : rawResponse?.artifact_ticket,
         });
 
         logVerdict(cfg, {
@@ -430,6 +437,8 @@ export const pluginDefinition = {
         // pre-tool Block is not evidence that the operation executed.
         toolExecution.effect_executed = toolExecution.effective_verdict !== "block";
         toolExecution.outcome = reportedResultOutcome(event, toolExecution);
+        const artifactAttestation = attestFullWrite(toolExecution.artifact_ticket, event, toolExecution);
+        delete toolExecution.artifact_ticket;
         preToolDecisionByCallId.delete(`${cfg.sid}:${call_id}`);
 
         const t0 = Date.now();
@@ -455,6 +464,7 @@ export const pluginDefinition = {
               runtime_namespace: cfg.runtimeNamespace,
               decision_schema_version: 1,
               tool_execution: toolExecution,
+              artifact_attestation: artifactAttestation,
               result_payload_scope: "model_visible_content",
               result_duplicate: resultDuplicate,
             },

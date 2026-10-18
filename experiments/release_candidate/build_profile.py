@@ -2,6 +2,10 @@
 from pathlib import Path
 import hashlib
 import yaml
+try:
+    from .rule_identity import uniquify
+except ImportError:  # Direct script entry point.
+    from rule_identity import uniquify
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / 'tests/fixtures/policies/eval_combined_graduated_a3s.yaml'
@@ -14,6 +18,11 @@ def build():
     pack['backend']['judge_fail_mode'] = 'closed'
     pack['backend']['ingest_judges']['configuration_change'] = True
     for policy in pack['policies']:
+        if policy['id'] == 'execution_v2':
+            old = 'IMPLIES:R Warn(t, "tool", "background_daemon", "detached/background daemon launch (nohup/setsid/disown/--daemon) outlives the session")'
+            new = 'IMPLIES:R Approve(t, "tool", "background_daemon")'
+            assert policy['mfotl'].count(old) == 1
+            policy['mfotl'] = policy['mfotl'].replace(old, new)
         if policy['id'] == 'collection_v1':
             old = 'IMPLIES:R Block(t, "tool", "collection_after_credential", "data staging follows a credential access in this session")'
             new = 'IMPLIES:R Approve(t, "tool", "collection_after_credential")'
@@ -122,6 +131,13 @@ ALWAYS (FORALL t, c, tool, input.
   IMPLIES:R Approve(t, "tool", "configuration_capability_review"))
 }
 '''))
+    try:
+        from .evidence_contracts import apply
+    except ImportError:
+        from evidence_contracts import apply
+    contracts = apply(pack)
+    # Preserve aliases for comparisons with frozen historical verdict logs.
+    pack['meta'] = {'verdict_category_migrations': uniquify(pack), 'evidence_contracts': contracts}
     class Dumper(yaml.SafeDumper):
         pass
     def string(dumper, value):

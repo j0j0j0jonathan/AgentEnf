@@ -32,7 +32,8 @@ _POLICY_ACTIVE_RE = re.compile(r'PolicyActive\s*\(\s*[A-Za-z_][A-Za-z0-9_]*\s*,\
 
 _EVENT_FIELD_NAMES: dict[str, tuple[str, ...]] = {
     "SessionStart": ("sid",),
-    "Turn": ("tid", "sid"),
+    "Turn": ("tid", "rid", "sid"),
+    "Message": ("tid", "role", "content", "n"),
     "UserMessage": ("tid", "content", "token_count"),
     "AssistantHistory": ("tid", "content", "token_count"),
     "SystemPrompt": ("tid", "content", "token_count"),
@@ -41,6 +42,7 @@ _EVENT_FIELD_NAMES: dict[str, tuple[str, ...]] = {
     "PolicyActive": ("tid", "policy_id"),
     "CompletionObserved": ("tid", "content", "token_count"),
     "CompletionReleased": ("tid", "content", "token_count"),
+    "ReplyEvidence": ("tid", "content"),
     "TokenUsage": ("tid", "prompt_tokens", "completion_tokens", "total_tokens"),
     "UserFeedback": ("tid", "kind", "payload"),
     "ToolCall": ("tid", "call_id", "tool", "input"),

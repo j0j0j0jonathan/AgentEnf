@@ -30,12 +30,36 @@ _CACHE_IO_LOCK = RLock()
 _CACHE_LOCK_DEPTH = local()
 
 
+@contextmanager
+def _bounded_cache_lock():
+    # Lock acquisition is not covered by HTTP timeouts. Never wait forever for
+    # another process or thread while the monitor holds a pending operation.
+    if not _CACHE_IO_LOCK.acquire(timeout=5.0):
+        raise TimeoutError("predicate_cache_thread_lock_timeout")
+    try:
+        yield
+    finally:
+        _CACHE_IO_LOCK.release()
+
+
+def _lock_cache_file(handle):
+    deadline = time.monotonic() + 5.0
+    while True:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("predicate_cache_file_lock_timeout")
+            time.sleep(0.01)
+
+
 def _cache_serialized(fn):
     signature = inspect.signature(fn)
 
     @wraps(fn)
     def wrapped(*args, **kwargs):
-        with _CACHE_IO_LOCK:
+        with _bounded_cache_lock():
             # The proxy and embedded Python in EnfGuard share these files.
             # Protect compaction against concurrent readers and appenders too.
             if getattr(_CACHE_LOCK_DEPTH, "active", False):
@@ -45,7 +69,7 @@ def _cache_serialized(fn):
             folder = SESSIONS_DIR / _normalize_sid(sid)
             folder.mkdir(parents=True, exist_ok=True)
             with (folder / ".judge_cache.lock").open("a") as handle:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                _lock_cache_file(handle)
                 _CACHE_LOCK_DEPTH.active = True
                 try:
                     return fn(*args, **kwargs)
@@ -621,6 +645,26 @@ def _judge(
     content: str,
     cache_extra: tuple[Any, ...] = (),
 ) -> JudgeResult:
+    from instrlib.predicate_progress import tracking
+    with tracking(LOGS_DIR, predicate_name, content):
+        try:
+            result = _judge_impl(predicate_name, system_prompt, content, cache_extra)
+        except TimeoutError as exc:
+            result = _failed_judge_result(predicate_name, exc)
+    if os.environ.get('ENFGUARD_CAPTURE_PREDICATE_INPUTS') == '1':
+        from instrlib.predicate_evidence import capture
+        capture(LOGS_DIR, name=predicate_name, content=content, prompt=system_prompt,
+                context={'tid':_current_tid(),'sid':_current_sid(),'phase':_current_phase()},
+                result=result, backend=_judge_config(predicate_name), threshold=_threshold(predicate_name))
+    return result
+
+
+def _judge_impl(
+    predicate_name: str,
+    system_prompt: str,
+    content: str,
+    cache_extra: tuple[Any, ...] = (),
+) -> JudgeResult:
     if not str(content or "").strip():
         return JudgeResult(
             raw_score=0.0,
@@ -629,6 +673,8 @@ def _judge(
             judge_prompt=system_prompt,
         )
     backend, model, timeout_ms = _judge_config(predicate_name)
+    from instrlib.predicate_progress import stage
+    stage("pre_evaluation_lookup")
     pre_evaluated = _pre_evaluated_judge_result(predicate_name, content)
     if pre_evaluated is not None:
         return pre_evaluated
@@ -637,19 +683,25 @@ def _judge(
     # per-predicate backend invalidates stale entries automatically.
     config_signature = (backend, model, timeout_ms)
     cache_key = _judge_cache_key(predicate_name, content, cache_extra + config_signature)
+    stage("session_cache_lookup")
     cached = _cached_judge_result(cache_key, sid)
     if cached is not None:
         return cached
 
+    stage("classifier_call")
     started_at = time.monotonic()
     try:
-        parsed = _call_and_parse_judge_api(
-            system_prompt,
-            content,
-            backend=backend,
-            model=model,
-            timeout_ms=timeout_ms,
-        )
+        if _judge_strategy(predicate_name):
+            parsed = _call_reply_guard(predicate_name, system_prompt, content,
+                                       backend=backend, model=model, timeout_ms=timeout_ms)
+        else:
+            parsed = _call_and_parse_judge_api(
+                system_prompt,
+                content,
+                backend=backend,
+                model=model,
+                timeout_ms=timeout_ms,
+            )
     except Exception as exc:
         # Do NOT cache failures (in-memory or shared). A single transient
         # timeout/network error must not poison the cache forever — the
@@ -670,9 +722,63 @@ def _judge(
         batch_id="",
         judge_prompt=system_prompt,
     )
-    _session_memory_cache(sid)[cache_key] = result
-    _write_shared_judge_result(cache_key, predicate_name, content, result, sid)
+    if not result.fail_mode:
+        _session_memory_cache(sid)[cache_key] = result
+        _write_shared_judge_result(cache_key, predicate_name, content, result, sid)
     return result
+
+
+def _judge_strategy(predicate_name: str) -> str:
+    return next((str(spec.get("strategy", "") or "") for spec in _user_predicate_specs()
+                 if spec.get("name") == predicate_name), "")
+
+
+def _strategy_signature(predicate_name: str) -> tuple:
+    strategy = _judge_strategy(predicate_name)
+    if not strategy:
+        return ()
+    from instrlib.reply_guard import STRATEGY, CACHE_SIGNATURE
+    return CACHE_SIGNATURE if strategy == STRATEGY else ("unsupported_strategy", strategy)
+
+
+def _pre_eval_contract_key(predicate_name: str, content: str) -> str:
+    plan = judge_plan(predicate_name, content)
+    return _judge_cache_key(predicate_name, content,
+                            (plan[1] if plan else ()) + _judge_config(predicate_name))
+
+
+def _call_reply_guard(predicate_name, criterion, content, *, backend, model, timeout_ms):
+    from instrlib import reply_guard
+    if _judge_strategy(predicate_name) != reply_guard.STRATEGY or backend != "openai_decisions":
+        raise ValueError("Unsupported reply strategy/backend; no single-question fallback")
+    # One bounded orchestration occupies a model slot. Internal calls are serial
+    # and share one deadline; no nested semaphore acquisition or retries.
+    started = time.monotonic()
+    timeout = max(timeout_ms, 1) / 1000
+    if not _MODEL_SLOTS.acquire(timeout=timeout):
+        raise TimeoutError("reply_guard_model_slot_deadline")
+    try:
+        evidence = reply_guard.evaluate(content, model, timeout - (time.monotonic() - started),
+                                         criterion=criterion)
+    finally:
+        _MODEL_SLOTS.release()
+    if evidence["status"] != "ok":
+        failure = _failed_judge_result(predicate_name, ValueError(
+            f"{evidence['error_code']} at {evidence['failed_stage']} ({evidence['error_type']})"))
+        return JudgeResult(raw_score=failure.raw_score, reason=failure.reason,
+                           reasons=failure.reasons, fail_mode=failure.fail_mode,
+                           raw_reply=json.dumps({"strategy": reply_guard.STRATEGY,
+                                                 "evidence": evidence}, ensure_ascii=True))
+    label = evidence["label"]
+    detail = evidence.get("decision_evidence", {})
+    explanation = ("usable harmful payload without a supported refusal exception" if label else
+                   "a refusal has semantic coverage and an earlier-text witness" if detail.get("payload_present") else
+                   "no usable harmful payload was identified")
+    reason = f"Label {label} because {explanation}; combined by {reply_guard.STRATEGY}."
+    raw = {"strategy": reply_guard.STRATEGY, "label": label, "reason": reason,
+           "label_origin": "deterministic_combination", "evidence": evidence}
+    return JudgeResult(raw_score=float(label), reason=reason, reasons=(reason,),
+                       raw_reply=json.dumps(raw, ensure_ascii=True), judge_prompt=criterion)
 
 
 @_cache_serialized
@@ -735,6 +841,7 @@ def _write_pre_eval_result(
         "latency_ms": result.latency_ms,
         "batch_id": result.batch_id,
         "judge_prompt": result.judge_prompt,
+        "contract_key": _pre_eval_contract_key(predicate_name, content),
     }
     try:
         PRE_EVAL_RESULTS_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -784,6 +891,11 @@ def _pre_evaluated_judge_result(predicate_name: str, content: str) -> JudgeResul
     if not matches:
         return None
     exact = [entry for entry in matches if entry.get("content") == content]
+    if _judge_strategy(predicate_name):
+        # A previous single-question score (or a different backend/criterion)
+        # must never stand in for this composite strategy after a hot reload.
+        key = _pre_eval_contract_key(predicate_name, content)
+        exact = [entry for entry in exact if entry.get("contract_key") == key]
     if exact:
         return _pre_eval_entry_to_result(exact[-1])
     return None
@@ -816,6 +928,13 @@ def judge_plan(predicate_name: str, content: str) -> tuple[str, tuple[Any, ...]]
     for spec in _user_predicate_specs():
         if spec.get("name") != predicate_name or spec.get("kind") != "llm_judge":
             continue
+        if content and _uses_reply_evidence(spec):
+            from instrlib.reply_evidence import reply_from_evidence
+            try:
+                if not reply_from_evidence(content).strip():
+                    return None
+            except (TypeError, ValueError):
+                return None  # runtime wrapper records a failure, never a negative
         arg_specs = _predicate_arg_specs(spec)
         system_prompt = str(spec.get("system_prompt", "") or "")
         return system_prompt, (system_prompt, _arg_signature(arg_specs))
@@ -887,19 +1006,22 @@ def _dispatch_batched(
 ) -> None:
     """Send one structured call per event and backend/model configuration."""
 
-    groups: dict[tuple[str, str, int, str], list[tuple[int, JudgeBatchTask, str]]] = {}
+    groups: dict[tuple, list[tuple[int, JudgeBatchTask, str]]] = {}
     for index, task, cache_key, config in misses:
         backend, model, timeout_ms = config
         # One observed event can feed several semantic predicates. Keep those
         # questions in one structured request, but never mix different event
         # payloads. This removes repeated passes over the same Completion while
         # retaining an independent criterion and result id for each predicate.
-        groups.setdefault((backend, model, timeout_ms, task.content), []).append(
+        # Composite strategies route through _judge independently, even when
+        # another predicate consumes exactly the same event text.
+        discriminator = str(index) if _judge_strategy(task.predicate_name) else ""
+        groups.setdefault((backend, model, timeout_ms, task.content, discriminator), []).append(
             (index, task, cache_key)
         )
 
     def run_group(entry):
-        (backend, model, timeout_ms, _event_content), group = entry
+        (backend, model, timeout_ms, _event_content, _strategy), group = entry
         if len(group) == 1:
             index, task, _ = group[0]
             results[index] = _judge(
@@ -1036,6 +1158,9 @@ def _judge_cache_key(predicate_name: str, content: str, cache_extra: tuple[Any, 
     """
 
     payload = [_JUDGE_CONTRACT_VERSION, predicate_name, content, _jsonable(cache_extra)]
+    strategy = _strategy_signature(predicate_name)
+    if strategy:
+        payload.append(_jsonable(strategy))
     return hashlib.blake2b(
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
             "utf-8"
@@ -1310,9 +1435,11 @@ def _call_judge_api(
 
     if backend == "openai_decisions":
         from instrlib import decisions
-        with _MODEL_SLOTS:
-            data = decisions.ask(_sanitize(content),
-                [decisions.predicate_question("criterion", _sanitize(system_prompt))],
+        with _model_slot(max(timeout_ms, 1) / 1000):
+            # Decisions carries evidence in its own JSON input field. XML-style
+            # escaping changes the evidence and can merge distinct batch inputs.
+            data = decisions.ask(content,
+                [decisions.predicate_question("criterion", system_prompt)],
                 max(timeout_ms, 1) / 1000, model=model)
         return json.dumps(decisions.predicate_result(data))
 
@@ -1410,12 +1537,12 @@ def _call_batch_judge_api(
         # Decisions questions share ONE input. Never combine different inputs.
         groups = {}
         for index, task in enumerate(tasks):
-            groups.setdefault(_sanitize(task.content), []).append((index, task))
+            groups.setdefault(task.content, []).append((index, task))
         results = []
         for content, group in groups.items():
-            questions = [decisions.predicate_question(str(index), _sanitize(task.system_prompt))
+            questions = [decisions.predicate_question(str(index), task.system_prompt)
                          for index, task in group]
-            with _MODEL_SLOTS:
+            with _model_slot(max(timeout_ms, 1) / 1000):
                 data = decisions.ask(content, questions, max(timeout_ms, 1) / 1000, model=model)
             for position, (index, task) in enumerate(group):
                 results.append({"id": index, **decisions.predicate_result(data, position)})
@@ -1479,10 +1606,20 @@ def _call_batch_judge_api(
 _MODEL_SLOTS = BoundedSemaphore(max(1, int(os.environ.get("ENFGUARD_PREDICATE_MAX_CONCURRENT", "4"))))
 
 
+@contextmanager
+def _model_slot(timeout):
+    if not _MODEL_SLOTS.acquire(timeout=max(float(timeout), 0.001)):
+        raise TimeoutError("predicate_model_slot_timeout")
+    try:
+        yield
+    finally:
+        _MODEL_SLOTS.release()
+
+
 def _bounded_model_call(fn):
     @wraps(fn)
     def wrapped(*args, **kwargs):
-        with _MODEL_SLOTS:
+        with _model_slot(kwargs["timeout_s"]):
             return fn(*args, **kwargs)
     return wrapped
 
@@ -2025,6 +2162,11 @@ def __getattr__(name: str):
     raise AttributeError(name)
 
 
+def _uses_reply_evidence(spec: dict[str, Any]) -> bool:
+    return any(isinstance(ref, dict) and ref.get("source") == "ReplyEvidence"
+               for ref in spec.get("inputs", []) or [])
+
+
 def _make_user_llm_judge(spec: dict[str, Any]):
     name = str(spec.get("name", "") or "")
     system_prompt = str(spec.get("system_prompt", "") or "")
@@ -2034,6 +2176,15 @@ def _make_user_llm_judge(spec: dict[str, Any]):
         content = _format_predicate_args(arg_specs, args)
         if not _predicate_enabled(name):
             return 0.0
+        if _uses_reply_evidence(spec):
+            from instrlib.reply_evidence import reply_from_evidence
+            try:
+                reply = reply_from_evidence(content)
+            except (TypeError, ValueError) as exc:
+                result = _failed_predicate_result(name, exc, "invalid_reply_evidence")
+                return _score(name, content, result, {"input_contract": "reply-evidence-v1"})
+            if not reply.strip():
+                return 0.0
         # A tool-only Responses turn emits Completion(""). Fail-closed judges
         # would otherwise Block every function_call with no assistant text
         # (probe seed-0016: empty output + secret_output/private_instruction).

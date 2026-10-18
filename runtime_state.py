@@ -49,6 +49,8 @@ class ProxyState:
         self.sessions: set[str] = set()
         self.sessions_lock = threading.Lock()
         self.enforcer: Enforcer | None = None
+        from instrlib.artifact_evidence import ArtifactEvidence
+        self.artifact_evidence = ArtifactEvidence()
         self.logger: Logger | None = None
         self.http: httpx.AsyncClient | None = None
         self.predicate_calls: dict[str, list[PredicateCall]] = {}

@@ -142,7 +142,11 @@ async def _reload_runtime() -> None:
         # cryptic `FileNotFoundError` from `Popen`. Both initial boot and
         # `/admin/reload` go through this path, so a YAML override that
         # points at a missing binary is also caught.
-        _ensure_enfguard_binary(new_config.enfguard_bin)
+        if new_config.monitor_backend == 'enfflash':
+            _ensure_enfguard_binary(new_config.enfflash_bin)
+            _ensure_enfguard_binary(new_config.enfflash_compiler)
+        else:
+            _ensure_enfguard_binary(new_config.enfguard_bin)
         predicate_calls = extract_predicate_calls(
             new_config.composite_policy_file,
             new_config.composite_signature_file,
@@ -261,14 +265,21 @@ def _archive_previous_run_logs() -> None:
 
 def _build_enforcer(config: RuntimeConfig) -> Enforcer:
     fun_path = config.predicates_file if config.predicates_file.exists() else None
-    return Enforcer(
-        binary=str(config.enfguard_bin),
+    cls = Enforcer
+    extra = {}
+    if config.monitor_backend == 'enfflash':
+        from instrlib.enfflash import EnfFlashEnforcer
+        cls = EnfFlashEnforcer
+        extra = dict(compiler=config.enfflash_compiler, cache_dir=config.state_dir / 'enfflash')
+    return cls(
+        binary=str(config.enfflash_bin if config.monitor_backend == 'enfflash' else config.enfguard_bin),
         sig=str(config.composite_signature_file),
         formula=str(config.composite_policy_file),
         env=config.enfguard_env,
         fun=str(fun_path) if fun_path else None,
         trace_path=str(config.trace_log_file),
         time_mode=config.enfguard_time_mode,
+        **extra,
     )
 
 
@@ -320,6 +331,17 @@ def _configure_ingest_judges() -> None:
             "ingest_judges",
             IngestJudgeConfig(enabled=state.unknown_tool_judge),
         )
+        if config.property_contract:
+            from functools import partial
+            from instrlib.property_contracts import VERSION, VALUE_CRITERION, FLOW_CRITERION
+            if config.property_contract != VERSION:
+                raise ValueError("Unknown ingest property contract")
+            # Bind per registration, not through mutable module prompts. Hot
+            # reload back to a legacy profile restores the original functions.
+            classify_content_disclosure_with_status = partial(
+                classify_content_disclosure_with_status, criterion=VALUE_CRITERION)
+            classify_authored_capability_with_status = partial(
+                classify_authored_capability_with_status, criterion=FLOW_CRITERION)
         # The environment switch is the evaluation-level override.  Apply it
         # before registering adapters, rather than relying only on the adapter
         # functions to decline calls later.  That makes a judges-off ablation
@@ -1149,7 +1171,7 @@ async def tool_execute(request: Request) -> JSONResponse:
     # call that proposed the tool. The action layer re-anchors the Turn
     # and emits Clock with phase="tool" so policies can reason about
     # action duration if they want.
-    with workspace_context(workspace_roots), session_context(sid):
+    with workspace_context(workspace_roots), session_context(sid, verified_artifacts='artifact_provenance_v3' in active_policies):
         mapped_tool_events = map_tool_call(tid, call_id, tool_name, tool_input)
         result_origin = classify_result_origin(tool_name, tool_input)
     canonical_tool = tool_name.lower().strip()
@@ -1162,6 +1184,11 @@ async def tool_execute(request: Request) -> JSONResponse:
     from instrlib.persistence_paths import persistence_path_events
     mapped_tool_events.extend(persistence_path_events(
         tid, call_id, canonical_tool, tool_input, body.get("runtime_namespace"), mapped_tool_events, raw_tool_name=tool_name))
+    artifact_ticket = None
+    if 'artifact_provenance_v3' in active_policies:
+        artifact_events, artifact_ticket = state.artifact_evidence.prepare(
+            tid, sid, call_id, body.get('runtime_namespace'), canonical_tool, tool_input, mapped_tool_events)
+        mapped_tool_events.extend(artifact_events)
     # The direct agent hook may use a different session id from the proxied LLM
     # response (NanoClaw's chat request can be sessionless while tool hooks use
     # the WhatsApp jid). Persist the canonical proposing tool at the authoritative
@@ -1198,6 +1225,7 @@ async def tool_execute(request: Request) -> JSONResponse:
     cau = await _resolve_approvals(tid, sid, cau, "tool")
 
     decision, reason, warning = _tool_decision(cau)
+    state.artifact_evidence.decide(sid, call_id, body.get('runtime_namespace'), decision != 'block')
     decision_trace = _tool_decision_trace(policy_decision, decision, reason, warning)
     if decision == "block" and call_id:
         # The tool will not run; any later "result" for this call is the runtime
@@ -1233,6 +1261,8 @@ async def tool_execute(request: Request) -> JSONResponse:
     }
     if warning:
         response["warning"] = warning
+    if artifact_ticket and decision != 'block':
+        response['artifact_ticket'] = artifact_ticket
     if body.get("decision_schema_version") == 1:
         response["decision_trace"] = decision_trace
     return JSONResponse(content=response)
@@ -1275,6 +1305,9 @@ async def tool_result(request: Request) -> JSONResponse:
         Event("ToolResult", tid, call_id, result_content, exit_code),
         Event("Classify", tid, call_id, "execution_outcome", outcome),
     ]
+    result_events.extend(state.artifact_evidence.finish(
+        tid, sid, call_id, body.get('runtime_namespace'), body,
+        blocked=state.is_blocked_call(call_id, sid)))
     # Source-based trust: external origin -> untrusted; local -> trusted;
     # unknown origin -> fall back to the tool-name allowlist (legacy).
     _origin = origins.get(call_id, "unknown") if call_id else "unknown"
@@ -1551,6 +1584,7 @@ async def _run_enforced_request(
         response=raw_response,
         api_format=api_format,
         active_policies=active_policies,
+        include_reply_evidence="ReplyEvidence" in _active_predicate_calls(),
     )
     state.record_proposing_tools(sid, collect_proposing_tools(outbound_events))
     state.record_tool_origins(sid, collect_tool_origins(outbound_events))
@@ -1877,6 +1911,7 @@ async def _run_streaming_request(
         response=raw_response,
         api_format=api_format,
         active_policies=active_policies,
+        include_reply_evidence="ReplyEvidence" in _active_predicate_calls(),
     )
     state.record_proposing_tools(sid, collect_proposing_tools(outbound_events))
     state.record_tool_origins(sid, collect_tool_origins(outbound_events))
@@ -4093,6 +4128,7 @@ def _keep_trace_event(event: Event, *, include_assistant_content: bool = True) -
         "Completion",
         "CompletionRedacted",
         "CompletionReleased",
+        "ReplyEvidence",
     }
 
 
