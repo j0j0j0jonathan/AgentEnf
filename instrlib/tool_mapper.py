@@ -14,6 +14,7 @@ filesystem snapshot or proof of a successful write.
 import ast
 import base64
 import ipaddress
+import hashlib
 import json
 import os
 import posixpath
@@ -5084,9 +5085,12 @@ def _authored_document_rule_target(targets, content: str) -> Optional[str]:
     `_control_artifact_content_target` declined, so memory files and auto-run
     configs keep their existing, stronger treatment.
     """
-    if not content or not _DOC_STANDING_RULE_SHAPE_RE.search(_deobfuscate(content)):
+    if not content:
         return None
-    if not has_broad_content_candidate(content):
+    candidate = _is_project_doc_poisoning_content(content)
+    if not candidate and not _DOC_STANDING_RULE_SHAPE_RE.search(_deobfuscate(content)):
+        return None
+    if not candidate and not has_broad_content_candidate(content):
         return None
     for _ct in targets or ():
         _p = _norm_path_token(_ct or "")
@@ -5145,11 +5149,9 @@ def _append_memory_poison_events(
         _emit_judge_telemetry(events, tid, call_id, "memory_poison", status)
         return
     if doc_target:
-        # Ordinary project document. No control_artifact_write: the file is not an
-        # agent control surface, and treating it as one would fire the
-        # self-tampering clause on routine documentation. ``poison`` and
-        # ``standing_rule``/``adopts`` collapse to the same durable-rule class here
-        # because the pack joins it with untrusted provenance either way.
+        # Ordinary document: rule-shaped wording alone is not self-tampering.
+        # Confirmed unsafe directives may block directly; other adopted standing
+        # rules require policy context such as a specifically blocked retry.
         if memory_label in {"poison", "standing_rule", "adopts"}:
             events.append(
                 Event("Classify", tid, call_id, "artifact_write", "authored_document")
@@ -5157,6 +5159,9 @@ def _append_memory_poison_events(
             events.append(
                 Event("Classify", tid, call_id, "memory_content_kind", "standing_rule")
             )
+        if memory_label == "poison":
+            events.append(Event("Classify", tid, call_id, "control_artifact_write", "project_docs"))
+            events.append(Event("Classify", tid, call_id, "memory_content_kind", "security_sensitive_rule"))
         _emit_judge_telemetry(events, tid, call_id, "memory_poison", status)
         return
     if memory_label == "poison":
@@ -7174,14 +7179,14 @@ def _record_flagged_content(path: str, content: str, label: str) -> None:
         return
     bucket = _FLAGGED_CONTENT.setdefault(sid, [])
     _FLAGGED_CONTENT.move_to_end(sid)
-    bucket.append((sh, str(label), _norm_path_token(path or "")))
+    bucket.append((sh, str(label), _norm_path_token(path or ""), hashlib.sha256(content.encode("utf-8")).hexdigest()))
     del bucket[:-_FLAGGED_MAX_PER_SESSION]
     while len(_FLAGGED_CONTENT) > _FLAGGED_MAX_SESSIONS:
         _FLAGGED_CONTENT.popitem(last=False)
 
 
-def substitution_retry_label(path: str, content: str) -> Optional[str]:
-    """Label of an earlier flagged write this one substantially reproduces.
+def substitution_retry_match(path: str, content: str):
+    """Label and exact content hash of an earlier substantially similar write.
 
     Returns None when there is no session, no earlier flagged content, the paths
     are the same (an ordinary rewrite of the same file is not a substitution), or
@@ -7197,14 +7202,19 @@ def substitution_retry_label(path: str, content: str) -> Optional[str]:
     if len(sh) < _SUBSTITUTION_MIN_SHINGLES:
         return None
     here = _norm_path_token(path or "")
-    best, best_label = 0.0, None
-    for prev_sh, label, prev_path in bucket:
+    best, best_match = 0.0, None
+    for prev_sh, label, prev_path, content_id in bucket:
         if prev_path and here and prev_path == here:
             continue
         score = _containment(sh, prev_sh)
         if score > best:
-            best, best_label = score, label
-    return best_label if best >= _SUBSTITUTION_MIN_CONTAINMENT else None
+            best, best_match = score, (label, content_id)
+    return best_match if best >= _SUBSTITUTION_MIN_CONTAINMENT else None
+
+
+def substitution_retry_label(path: str, content: str) -> Optional[str]:
+    match = substitution_retry_match(path, content)
+    return match[0] if match else None
 
 
 def _append_substitution_retry_events(
@@ -7217,9 +7227,13 @@ def _append_substitution_retry_events(
     """
     if not content:
         return
-    label = substitution_retry_label(path, content)
-    if label:
+    content_id = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    events.append(Event("Classify", tid, call_id, "authored_content_id", content_id))
+    match = substitution_retry_match(path, content)
+    if match:
+        label, source_id = match
         events.append(Event("Classify", tid, call_id, "substitution_retry", label))
+        events.append(Event("Classify", tid, call_id, "substitution_source_content_id", source_id))
     flagged = next(
         (
             str(e.args[3])
@@ -10011,17 +10025,8 @@ def _map_tool_call_impl(
                     Event("Classify", tid, call_id, "control_artifact_write", _project_lbl)
                 )
                 break
-            # Poisoned standing instructions in project markdown (README/docs)
-            # are delayed-trigger memory. Not an agent-memory path, but the
-            # same control-artifact Block applies (syn-0050).
-            if (
-                _PROJECT_MARKDOWN_RE.search(_ct)
-                and _is_project_doc_poisoning_content(_ca_content)
-            ):
-                events.append(
-                    Event("Classify", tid, call_id, "control_artifact_write", "project_docs")
-                )
-                break
+            # Prose keyword matches route through the content judge below.
+            # They are candidates, not proof that this document adopts a rule.
             # Deleting an enforcing control line is the removal form of
             # disable_security: the replacement body is empty, so the content
             # checks above see nothing (syn-0440).

@@ -778,6 +778,29 @@ policies:
 
     AND
 
+    {"blocked_standing_rule_retry"}{
+    ALWAYS (FORALL t, rid, s, call_id, tool, input, source.
+      (PolicyActive(t, "persistence_v1")
+       AND Turn(t, rid, s)
+       AND ToolPlanned(t, call_id, tool, input)
+       AND Classify(t, call_id, "substitution_source_content_id", source)
+       AND Classify(t, call_id, "memory_stance", "adopts")
+       AND (Classify(t, call_id, "memory_content_kind", "standing_rule")
+            OR Classify(t, call_id, "memory_content_kind", "security_sensitive_rule"))
+       AND (EXISTS t1. (ONCE (EXISTS r1, c1, tool1, input1, reason.
+            Turn(t1, r1, s)
+            AND ToolPlanned(t1, c1, tool1, input1)
+            AND Classify(t1, c1, "authored_content_id", source)
+            AND (Block(t1, "tool", "control_artifact_write", reason)
+                 OR Block(t1, "tool", "memory_standing_instruction", reason)
+                 OR Block(t1, "tool", "standing_rule_after_untrusted_instruction", reason)
+                 OR Block(t1, "tool", "blocked_standing_rule_retry", reason))))
+            AND NOT (t = t1)))
+      IMPLIES:R Block(t, "tool", "blocked_standing_rule_retry", "adopted standing-rule content retries a specifically blocked write at another destination"))
+    }
+
+    AND
+
     {"memory_standing_instruction"}{
     ALWAYS (FORALL t, call_id, tool, input.
       (PolicyActive(t, "persistence_v1")
