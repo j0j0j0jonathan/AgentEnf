@@ -1,3 +1,32 @@
+Pinned live experiment (19 October 2026)
+--------------------------------------
+install.py and guidance.js implement an opt-in prompt-builder patch for the exact
+OpenClaw 2026.3.12 image recorded in pinned-bundles.json. The installer runs before
+container start, verifies all six original bundle hashes, and patches every copy
+of buildBootstrapContextFiles. pilot.py enables it only when the frozen manifest
+sets startup_guidance=full-supplied-only-v1, identically in OFF and ON.
+
+After the original per-file and total budgets, compare each supplied file with
+its loader snapshot (using OpenClaw's trimEnd normalization). Only fully supplied
+SOUL.md, USER.md and MEMORY.md get a shorter use-supplied instruction in the exact
+AGENTS.md startup paragraph. AGENTS.md itself must be fully supplied. Daily memory,
+missing and truncated files retain reads. No workspace file, other context body,
+policy or tool authorization changes. No budget is redistributed after shortening.
+Unknown templates stay unchanged. Changes emit metadata to container stderr;
+no file content is logged by the patch. This is guidance, not an authenticated
+read grant, and the model may still reread. Source snapshots may be cached by
+OpenClaw; full means fully supplied in this prompt, not freshest on-disk bytes.
+
+This is a deviation from default A3S. The offline tests prove prompt assembly and
+content preservation, not unchanged agent behaviour or improved attack outcomes.
+Review before/after denials by rule and repeated reads. Include an unchanged-
+guidance OFF control for the memory attack alongside treatment OFF. A lower OFF
+attack rate may be a harness effect; one repetition cannot establish causality.
+No live API test has been launched yet.
+
+The older Python assembly.py prototype below is NOT the installed implementation.
+In particular, its confirmed-absence optimization is NOT enabled by guidance.js.
+
 Startup-context experiment — offline only
 ========================================
 

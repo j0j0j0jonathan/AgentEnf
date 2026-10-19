@@ -1,0 +1,12 @@
+{
+  "openclaw": "2026.3.12",
+  "image": "sha256:797b1b7dbcb15560b229e134edf11aefd4f40959801d6e21d402cbede575c316",
+  "bundles": {
+    "auth-profiles-C_YAZ4fH.js": "db59c4db62c72fb32bc8d5737fef8d3e3247b3bd7073670abef73f81325adaa5",
+    "config-ChUvLXCV.js": "ea16f043e0062edf438ecb68cd421dcca250d7300c819436b48af70734c54af9",
+    "discord-DdCAUSzx.js": "40a1c0c3b481ff5f45f6dcdf1e0776f8d0eb7c3d91bbf1e9ccfa0eac9b18a20e",
+    "model-selection-W9H2Eq3i.js": "2bd24ca334bffa738771aac3102d7d08dda843811ffc701b61f2d14d95afe75d",
+    "model-selection-xiG8Mm3V.js": "0dcc7a2c2d7730f60890497f805e90bc06e035ff0d1ef9b34c4f35cecdd47039",
+    "reply-BWse-UQA.js": "ddc08a994d9fb5a3c38a357ab1e138d6cfa1b2c70922e7111c3ce9e6a528fcab"
+  }
+}

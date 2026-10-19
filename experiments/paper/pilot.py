@@ -1,7 +1,8 @@
 """Run a frozen three-arm development pilot, using the retained A3S launcher.
 
-OFF and candidate legacy/strict share unchanged startup guidance. This is not
-a test of revised startup guidance, a thesis reproduction, or a held-out panel.
+Startup guidance is unchanged unless the frozen manifest explicitly enables
+the pinned prompt-builder experiment, identically in every arm. This is not a
+thesis reproduction or a held-out panel.
 """
 import argparse
 import getpass
@@ -62,7 +63,14 @@ def load_legacy(root):
     original_inject = module.ct.inject_config
     def inject(*args, **kwargs):
         module.ACTIVE['paper_path'] = Path(module.relay.CURRENT['directory']).parent
-        return original_inject(*args, **kwargs)
+        result = original_inject(*args, **kwargs)
+        manifest = json.loads((root / 'manifest.json').read_text())
+        if manifest.get('startup_guidance') == 'full-supplied-only-v1':
+            from experiments.startup_context.install import install
+            install(args[0], module.ACTIVE['paper_path'] / 'startup-guidance-install.json')
+        elif manifest.get('startup_guidance') not in (None, 'unchanged'):
+            raise ValueError('Unknown startup guidance experiment')
+        return result
     module.ct.inject_config = inject
     return module
 
